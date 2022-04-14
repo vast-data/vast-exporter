@@ -162,17 +162,17 @@ class VASTCollector(object):
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
 
-    @collection_timer.time()
     def collect(self):
-        for collector in [self._collect_cluster(), # must be first, initializes the cluster name (required by all)
-                          self._collect_physical(), # must be second, for collecting cnode host names (required by metrics)
-                          self._collect_logical(),
-                          self._collect_metrics()]:
-            try:
-                yield from collector
-            except Exception as e:
-                self.error_counter.inc()
-                logger.exception(f'caught exception while collecting metrics: {e}')
+        with self.collection_timer.time():
+            for collector in [self._collect_cluster(), # must be first, initializes the cluster name (required by all)
+                              self._collect_physical(), # must be second, for collecting cnode host names (required by metrics)
+                              self._collect_logical(),
+                              self._collect_metrics()]:
+                try:
+                    yield from collector
+                except Exception as e:
+                    self.error_counter.inc()
+                    logger.exception(f'caught exception while collecting metrics: {e}')
 
     def _describe_metrics(self):
         # metrics description
