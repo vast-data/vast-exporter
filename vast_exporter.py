@@ -79,10 +79,10 @@ class MetricDescriptor(object):
 # we must fetch it separately from the rest as we can't combine external+internal in a single query.
 DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 histograms=['read_latency'],
-                                tags={'proto_name': ['NFSCommon', 'NFS4Common', 'SMBCommon', 'S3Common']}),
+                                tags={'proto_name': ['NFSCommon', 'NFS4Common', 'SMBCommon', 'S3Common', 'ProtoAll']}),
                MetricDescriptor(class_name='ProtoMetrics',
                                 histograms=['read_size', 'write_size', 'write_latency'],
-                                tags={'proto_name': ['NFSCommon', 'NFS4Common', 'SMBCommon', 'S3Common']}),
+                                tags={'proto_name': ['NFSCommon', 'NFS4Common', 'SMBCommon', 'S3Common', 'ProtoAll']}),
                MetricDescriptor(class_name='ProtoConnectionMetrics',
                                 properties=['s3_conn_pool',
                                             's3_http_pool',
