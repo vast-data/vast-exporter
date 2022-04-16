@@ -5,6 +5,19 @@ VAST Prometheus Exporter
 The Prometheus exporter connects to VMS and leverages its REST API to extract state and metric information.
 It listens to port 8000 by default. This can be changed using the --port parameter.
 
+Content
+-------
+
+1. Cluster capacity and states.
+2. Physical component states (NIC, node, drive, etc').
+2. View path and capacity information.
+4. Performance metrics (BW/IOPS/latency/etc').
+
+Pre-requisities
+---------------
+
+Cluster of version 4.2 and up. Contact support in case you need an older version supported.
+
 Installation Using Docker
 -------------------------
 
@@ -18,6 +31,14 @@ Installation Using Python
 
     $ pip install -r requirements.txt
     $ ./vast_exporter.py --user=<USER> --password=<PASSWORD> --address=<ADDRESS>
+
+
+Monitoring
+----------
+
+Besides the obious stdout output where errors will land, the following metric will be incremeneted upon an error:
+
+    vast_collector_errors_total
 
 Prometheus Config
 -----------------
