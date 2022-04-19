@@ -162,14 +162,13 @@ class WrappedGauge(GaugeMetricFamily):
 class VASTCollector(object):
     def __init__(self, client):
         self._client = client
+        self._cluster_name = None
+        self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
 
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
 
     def collect(self):
-        self._cluster_name = None
-        self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
-
         with self.collection_timer.time():
             for collector in [self._collect_cluster(), # must be first, initializes the cluster name (required by all)
                               self._collect_physical(), # must be second, for collecting cnode host names (required by metrics)
