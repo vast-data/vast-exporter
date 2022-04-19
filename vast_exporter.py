@@ -162,13 +162,14 @@ class WrappedGauge(GaugeMetricFamily):
 class VASTCollector(object):
     def __init__(self, client):
         self._client = client
-        self._cluster_name = None
-        self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
 
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
 
     def collect(self):
+        self._cluster_name = None
+        self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
+
         with self.collection_timer.time():
             for collector in [self._collect_cluster(), # must be first, initializes the cluster name (required by all)
                               self._collect_physical(), # must be second, for collecting cnode host names (required by metrics)
@@ -226,11 +227,12 @@ class VASTCollector(object):
                     try:
                         gauge = gauges[valid_name]
                     except KeyError:
-                        gauge = self._create_labeled_gauge(valid_name, '', labels=['cnode_id', 'hostname'] + list(descriptor.tags))
+                        labels = ['cnode_id', 'hostname'] if scope == 'cnode' else []
+                        gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
                         gauges[valid_name] = gauge
                     for fqn in fqns:
                         for (object_id, value) in zip(table['object_id'], table[fqn]):
-                            labels = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, 'deleted')]
+                            labels = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, 'deleted')] if scope == 'cnode' else []
                             try:
                                 labels.append(descriptor.fqn_to_tag_value[fqn])
                             except KeyError:
