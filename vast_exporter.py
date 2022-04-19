@@ -51,8 +51,9 @@ def extract_keys(obj, keys):
     return [str(obj[k]) for k in keys]
 
 class MetricDescriptor(object):
-    def __init__(self, class_name, properties=None, histograms=None, tags=None):
+    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='5m'):
         self.class_name = class_name
+        self.time_frame = time_frame
         self.properties = properties or []
         self.histograms = histograms or []
         for i in self.histograms:
@@ -98,6 +99,7 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             'nfs_conn_rejected',
                                             'smb_conn_rejected']),
                MetricDescriptor(class_name='S3Metrics',
+                                time_frame='8m',
                                 properties=['get_object',
                                             'put_object',
                                             'multi_part_upload',
@@ -108,6 +110,7 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             'bad_http_request',
                                             'bad_https_request']),
                MetricDescriptor(class_name='S3Metrics',
+                                time_frame='8m',
                                 histograms=['get_service',
                                             'put_bucket',
                                             'delete_bucket',
@@ -196,10 +199,10 @@ class VASTCollector(object):
     def _create_labeled_gauge(self, name, help_text, labels):
         return WrappedGauge(name, help_text, labels, self._cluster_name)
 
-    def _get_metrics(self, scope, metric_names):
+    def _get_metrics(self, scope, metric_names, time_frame):
         properties = [('prop_list', metric) for metric in metric_names]
         result = self._client.get('monitors/ad_hoc_query', [('object_type', scope),
-                                                            ('time_frame', '5m')] + properties)
+                                                            ('time_frame', time_frame)] + properties)
         rows = result['data']
         # take the latest row per per object id
         index_of_id = result['prop_list'].index('object_id')
@@ -216,7 +219,7 @@ class VASTCollector(object):
         gauges = {}
         for descriptor in DESCRIPTORS:
             for scope in ['cluster', 'cnode']:
-                table = self._get_metrics(scope, descriptor.fqns)
+                table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
                 if not table:
                     logger.error(f'Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
                     self.error_counter.inc()
