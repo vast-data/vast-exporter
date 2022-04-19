@@ -219,7 +219,7 @@ class VASTCollector(object):
             for scope in ['cluster', 'cnode']:
                 table = self._get_metrics(scope, descriptor.fqns)
                 if not table:
-                    logger.error('Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
+                    logger.error(f'Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
                     self.error_counter.inc()
                     continue
                 for prop, fqns in descriptor.property_to_fqn.items():
