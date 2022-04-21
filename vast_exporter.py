@@ -167,6 +167,7 @@ class VASTCollector(object):
         self._client = client
         self._cluster_name = None
         self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
+        self._node_ip_to_hostname = {}
 
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
@@ -251,6 +252,7 @@ class VASTCollector(object):
         yield self._create_gauge('cluster_physical_space_in_use', 'Cluster Physical Space In Use', cluster['physical_space_in_use'])
         yield self._create_gauge('cluster_logical_space_in_use', 'Cluster Logical Space In Use', cluster['logical_space_in_use'])
         yield self._create_gauge('cluster_auxiliary_space_in_use', 'Cluster Auxiliary Space In Use', cluster['auxiliary_space_in_use'])
+        yield self._create_gauge('cluster_drr', 'Cluster Data Reduction Ratio', cluster['drr'])
         yield self._create_gauge('cluster_online', 'Cluster Online', cluster['state'] == 'ONLINE')
         yield self._create_gauge('nvram_raid_healthy', 'Nvram RAID Healthy', cluster['nvram_raid_state'] in ['HEALTHY', 'REBALANCE'])
         yield self._create_gauge('ssd_raid_healthy', 'Ssd RAID Healthy', cluster['ssd_raid_state'] in ['HEALTHY', 'REBALANCE'])
@@ -264,6 +266,7 @@ class VASTCollector(object):
             node_inactive = self._create_labeled_gauge(node_type + '_inactive', node_type.capitalize() + ' Inctive', labels=node_labels)
             node_failed = self._create_labeled_gauge(node_type + '_failed', node_type.capitalize() + ' Failed', labels=node_labels)
             for node in nodes:
+                self._node_ip_to_hostname[node['ip']] = node['hostname']
                 self._node_id_to_hostname[node_type][node['id']] = node['hostname']
                 node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (node['is_mgmt'] and node['state'] == 'INACTIVE'))
                 node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not node['is_mgmt'])
@@ -287,10 +290,9 @@ class VASTCollector(object):
             yield drive_failed
 
         nics = self._client.get('nics')
-        nic_labels = ['host', 'display_name']
-        nic_active = self._create_labeled_gauge('nic_active', 'NIC Active', labels=nic_labels)
+        nic_active = self._create_labeled_gauge('nic_active', 'NIC Active', labels=['hostname', 'display_name'])
         for nic in nics:
-            nic_active.add_metric(extract_keys(nic, nic_labels), nic['state'] == 'up')
+            nic_active.add_metric((self._node_ip_to_hostname.get(nic['host'], 'deleted'), nic['display_name']), nic['state'] == 'up')
         yield nic_active
         
         fans = self._client.get('fans')
