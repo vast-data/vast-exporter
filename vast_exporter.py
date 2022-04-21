@@ -33,13 +33,16 @@ class VASTClient(object):
         self._cert_file = cert_file
         self._cert_server_name = cert_server_name
 
+    vms_latency = Summary('vast_collector_vms_latency', 'VAST VMS Request Time')
+
     def _request(self, method, url, params):
         if self._cert_file:
             pm = urllib3.PoolManager(ca_certs=self._cert_file, server_hostname=self._cert_server_name)
         else:
             pm = urllib3.PoolManager(cert_reqs='CERT_NONE')
         headers = urllib3.make_headers(basic_auth=self._user + ':' + self._password)
-        r = pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
+        with self.vms_latency.time():
+            r = pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
         if r.status != http.HTTPStatus.OK:
             raise RESTFailure(f'Response failed with error {r.status} and message {r.data}')
         return json.loads(r.data.decode('utf-8'))
@@ -51,7 +54,7 @@ def extract_keys(obj, keys):
     return [str(obj[k]) for k in keys]
 
 class MetricDescriptor(object):
-    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='5m'):
+    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='2m'):
         self.class_name = class_name
         self.time_frame = time_frame
         self.properties = properties or []
