@@ -6,6 +6,7 @@ import http
 import json
 import time
 import os
+import re
 from prometheus_client import start_http_server
 from prometheus_client.core import GaugeMetricFamily, CounterMetricFamily, Summary, Counter, REGISTRY
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -195,6 +196,7 @@ class VASTCollector(object):
             for collector in [self._collect_cluster(), # must be first, initializes the cluster name (required by all)
                               self._collect_physical(), # must be second, for collecting cnode host names (required by metrics)
                               self._collect_logical(),
+                              self._collect_views(),
                               self._collect_metrics()]:
                 try:
                     yield from collector
@@ -327,17 +329,44 @@ class VASTCollector(object):
             psu_active.add_metric(extract_keys(psu, psu_labels), psu['state'] == 'up')
         yield psu_active
 
-    def _collect_logical(self):
+    VIEW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
+
+    def _get_view_metrics(self):
+        res = self._client.get('iodata', {'time_frame': '3m', 'results_num': 100000})
+        rows = [i for i in res['data'] if i['timestamp'] == res['timestamp']] # filter latest records
+
+        view_to_metrics = {}
+        for row in rows:
+            name = re.sub('(.+?) ?\(.+?\)', "\g<1>", row['view']) # default format is 'name (alias)'
+            metrics = view_to_metrics.setdefault(name, {})
+            for metric in self.VIEW_METRICS:
+                metrics[metric] = metrics.get(metric, 0) + row[metric]
+
+        return view_to_metrics
+
+    def _collect_views(self):
         views = self._client.get('views')
         view_labels = ['path', 'name', 'guid']
         view_logical_capacity = self._create_labeled_gauge('view_logical_capacity', 'View Logical Capacity', labels=view_labels)
         view_physical_capacity = self._create_labeled_gauge('view_physical_capacity', 'View Physical Capacity', labels=view_labels)
+        path_to_view = {}
         for view in views:
+            path_to_view[view['path']] = view
             view_logical_capacity.add_metric(extract_keys(view, view_labels), view['logical_capacity'])
-            view_physical_capacity.add_metric(extract_keys(view, view_labels), view['physical_capacity'])
+            view_physical_capacity.add_metric(extract_keys(view, view_labels), view['physical_capacity']) 
         yield view_logical_capacity
         yield view_physical_capacity
 
+        view_metrics = self._get_view_metrics()
+        for metric in self.VIEW_METRICS:
+            gauge = self._create_labeled_gauge('view_' + metric, 'View ' + metric, labels=view_labels)
+            for path, metrics in view_metrics.items():
+                if not path in path_to_view:
+                    continue
+                gauge.add_metric(extract_keys(path_to_view[path], view_labels), metrics[metric])
+            yield gauge
+
+    def _collect_logical(self):
         for (provider_url, provider_name, provider_pretty) in [('nis', 'nis', 'NIS'),
                                                                ('ldaps', 'ldap', 'LDAP'),
                                                                ('activedirectory', 'activedirectory', 'Active Directory')]:
