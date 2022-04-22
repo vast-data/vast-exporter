@@ -12,15 +12,24 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PORT = 8000
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--user', required=True)
-    parser.add_argument('--password', required=True)
-    parser.add_argument('--address', required=True)
-    parser.add_argument('--cert-file', required=False)
-    parser.add_argument('--cert-server-name', required=False)
-    parser.add_argument('--port', default=8000, type=int)
+    def add_argument(key, *args, **kwargs):
+        if key in os.environ:
+            kwargs['required'] = False
+            kwargs['default'] = os.environ[key]
+            parser.add_argument(*args, **kwargs)
+        else:
+            parser.add_argument(*args, **kwargs)
 
+    add_argument('VAST_COLLECTOR_USER', '--user', required=True)
+    add_argument('VAST_COLLECTOR_PASSWORD', '--password', required=True)
+    add_argument('VAST_COLLECTOR_ADDRESS', '--address', required=True)
+    add_argument('VAST_COLLECTOR_PORT', '--port', default=DEFAULT_PORT, type=int)
+    add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file', required=False)
+    add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name', required=False)
     return parser.parse_args()
 
 class RESTFailure(Exception): pass
