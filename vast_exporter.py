@@ -81,6 +81,7 @@ class MetricDescriptor(object):
         
 # read_latency is internal because of a bug (to be fixed soon), meantime and until clusters catch up
 # we must fetch it separately from the rest as we can't combine external+internal in a single query.
+# we split metrics to small groups until 4.3, uwsgi accepts no more than 4k
 PROTO_METRICS_TAGS = {'proto_name': ['NFSCommon', 'NFS4Common', 'SMBCommon', 'S3Common', 'ProtoAll', 'ReplicationCommon']}
 DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 histograms=['read_latency'],
@@ -89,7 +90,12 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 histograms=['write_latency'],
                                 tags=PROTO_METRICS_TAGS),
                MetricDescriptor(class_name='ProtoMetrics',
-                                histograms=['read_size', 'write_size'], # don't add metrics here before 4.3, uwsgi accepts no more than 4k
+                                histograms=['read_size', 'write_size'],
+                                tags=PROTO_METRICS_TAGS),
+               MetricDescriptor(class_name='ProtoMetrics',
+                                properties=['rd_md_iops',
+                                            'wr_md_iops',
+                                            'md_iops'],
                                 tags=PROTO_METRICS_TAGS),
                MetricDescriptor(class_name='ProtoConnectionMetrics',
                                 properties=['s3_conn_pool',
