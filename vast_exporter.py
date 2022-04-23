@@ -396,7 +396,7 @@ def main():
     params = vars(args)
     port = params.pop('port')
     debug = params.pop('debug')
-    logging.basicConfig(format='%(asctime)s %(thread)d %(levelname)s: %(message)s', level=logging.DEBUG if debug else logging.INFO)
+    logging.basicConfig(format='%(asctime)s %(threadName)s %(levelname)s: %(message)s', level=logging.DEBUG if debug else logging.INFO)
     logger.info(f'VAST Exporter started running. Listening on port {port}')
     start_http_server(port=port)
     client = VASTClient(**params)
