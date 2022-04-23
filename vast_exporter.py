@@ -1,4 +1,5 @@
 #!/usr/local/bin/python3
+import concurrent.futures
 import argparse
 import logging
 import urllib3
@@ -14,6 +15,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8000
+VMS_CONCURRENT_REQUESTS = 4
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -29,8 +31,9 @@ def parse_args():
     add_argument('VAST_COLLECTOR_PASSWORD', '--password', required=True)
     add_argument('VAST_COLLECTOR_ADDRESS', '--address', required=True)
     add_argument('VAST_COLLECTOR_PORT', '--port', default=DEFAULT_PORT, type=int)
-    add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file', required=False)
-    add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name', required=False)
+    add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file')
+    add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name')
+    add_argument('VAST_COLLECTOR_DEBUG', '--debug', action='store_true')
     return parser.parse_args()
 
 class RESTFailure(Exception): pass
@@ -52,13 +55,22 @@ class VASTClient(object):
             pm = urllib3.PoolManager(cert_reqs='CERT_NONE')
         headers = urllib3.make_headers(basic_auth=self._user + ':' + self._password)
         with self.vms_latency.time():
+            logger.debug(f'Sending request with url={url} and parameters={params}')
             r = pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
         if r.status != http.HTTPStatus.OK:
-            raise RESTFailure(f'Response failed with error {r.status} and message {r.data}')
+            raise RESTFailure(f'Response for request {url} failed with error {r.status} and message {r.data}')
         return json.loads(r.data.decode('utf-8'))
 
     def get(self, url, params=None):
         return self._request('GET', url, params)
+    
+    def _unused_helpers(self):
+        # metrics description
+        print(self._client.get('metrics'))
+        # all monitors
+        print(self._client.get('monitors'))
+        # example monitor
+        print(self._client.get('monitors/2/query', {'granularity': 'seconds', 'time_frame': '2m'}))
 
 def extract_keys(obj, keys):
     return [str(obj[k]) for k in keys]
@@ -156,8 +168,7 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             'nfs_rmdir_latency',
                                             'nfs_rename_latency',
                                             'nfs_link_latency',
-                                            'nfs_commit_latency',
-                                            'nfs_getattr_latency']),
+                                            'nfs_commit_latency']),
                MetricDescriptor(class_name='NfsMetrics',
                                 histograms=['nfs_getattr_latency',
                                             'nfs_lookup_latency',
@@ -193,24 +204,20 @@ class VASTCollector(object):
 
     def collect(self):
         with self.collection_timer.time():
-            for collector in [self._collect_cluster(), # must be first, initializes the cluster name (required by all)
-                              self._collect_physical(), # must be second, for collecting cnode host names (required by metrics)
-                              self._collect_logical(),
-                              self._collect_views(),
-                              self._collect_metrics()]:
-                try:
-                    yield from collector
-                except Exception as e:
-                    self.error_counter.inc()
-                    logger.exception(f'caught exception while collecting metrics: {e}')
+            phase_1_collectors = [self._collect_cluster()] # must be first, initializes the cluster name (required by all metrics)
+            phase_2_collectors = [self._collect_nodes()] # must be second, for collecting cnode host names and IPs (required by metrics)
+            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views()]
+            phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
 
-    def _describe_metrics(self):
-        # metrics description
-        print(self._client.get('metrics'))
-        # all monitors
-        print(self._client.get('monitors'))
-        # example monitor
-        print(self._client.get('monitors/2/query', {'granularity': 'seconds', 'time_frame': '2m'}))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=VMS_CONCURRENT_REQUESTS) as executor:
+                for collectors in [phase_1_collectors, phase_2_collectors, phase_3_collectors]:
+                    futures = [executor.submit(list, g) for g in collectors]
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            yield from future.result()
+                        except Exception as e:
+                            self.error_counter.inc()
+                            logger.exception(f'Caught exception while collecting metrics: {e}')
     
     def _create_gauge(self, name, help_text, value):
         gauge = GaugeMetricFamily('vast_' + name, help_text, labels=['cluster'])
@@ -236,33 +243,26 @@ class VASTCollector(object):
         columns = zip(*unique_rows)
         return dict(zip(result['prop_list'], columns))
             
-    def _collect_metrics(self):
-        gauges = {}
-        for descriptor in DESCRIPTORS:
-            for scope in ['cluster', 'cnode']:
-                table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
-                if not table:
-                    logger.error(f'Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
-                    self.error_counter.inc()
-                    continue
-                for prop, fqns in descriptor.property_to_fqn.items():
-                    valid_name = f'{scope}_metrics_{descriptor.class_name}_{prop.replace("__", "_").replace("num_samples", "count")}'
-                    try:
-                        gauge = gauges[valid_name]
-                    except KeyError:
-                        labels = ['cnode_id', 'hostname'] if scope == 'cnode' else []
-                        gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
-                        gauges[valid_name] = gauge
-                    for fqn in fqns:
-                        for (object_id, value) in zip(table['object_id'], table[fqn]):
-                            labels = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, 'deleted')] if scope == 'cnode' else []
-                            try:
-                                labels.append(descriptor.fqn_to_tag_value[fqn])
-                            except KeyError:
-                                pass
-                            gauge.add_metric(labels, value)
-        
-        yield from gauges.values()
+    def _collect_perf_metrics(self, descriptor):
+        for scope in ['cluster', 'cnode']:
+            labels = ['cnode_id', 'hostname'] if scope == 'cnode' else []
+            table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
+            if not table:
+                logger.error(f'Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
+                self.error_counter.inc()
+                continue
+            for prop, fqns in descriptor.property_to_fqn.items():
+                valid_name = f'{scope}_metrics_{descriptor.class_name}_{prop.replace("__", "_").replace("num_samples", "count")}'
+                gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
+                for fqn in fqns:
+                    for (object_id, value) in zip(table['object_id'], table[fqn]):
+                        labels = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, 'deleted')] if scope == 'cnode' else []
+                        try:
+                            labels.append(descriptor.fqn_to_tag_value[fqn])
+                        except KeyError: # untagged metric
+                            pass
+                        gauge.add_metric(labels, value)
+                yield gauge
 
     def _collect_cluster(self):
         cluster, = self._client.get('clusters')
@@ -278,7 +278,7 @@ class VASTCollector(object):
         yield self._create_gauge('ssd_raid_healthy', 'Ssd RAID Healthy', cluster['ssd_raid_state'] in ['HEALTHY', 'REBALANCE'])
         yield self._create_gauge('memory_raid_healthy', 'Memory RAID Healthy', cluster['memory_raid_state'] in ['HEALTHY', 'REBALANCE'])
 
-    def _collect_physical(self):
+    def _collect_nodes(self):
         node_labels = ['name', 'guid', 'hostname', 'id']
         for node_type in ['cnode', 'dnode']:
             nodes = self._client.get(node_type + 's')
@@ -295,6 +295,7 @@ class VASTCollector(object):
             yield node_inactive
             yield node_failed
 
+    def _collect_physical(self):
         drive_labels = ['guid', 'title', 'sn']
         for drive_type in ['ssd', 'nvram']:
             drives = self._client.get(drive_type + 's')
@@ -389,12 +390,13 @@ class VASTCollector(object):
         yield replication_target_ok
 
 def main():
-    logging.basicConfig(format='[%(asctime)s] %(levelname)s: %(message)s', level=logging.INFO)
     os.environ['PROMETHEUS_DISABLE_CREATED_SERIES'] = 'True'
 
     args = parse_args()
     params = vars(args)
     port = params.pop('port')
+    debug = params.pop('debug')
+    logging.basicConfig(format='%(asctime)s %(thread)d %(levelname)s: %(message)s', level=logging.DEBUG if debug else logging.INFO)
     logger.info(f'VAST Exporter started running. Listening on port {port}')
     start_http_server(port=port)
     client = VASTClient(**params)
