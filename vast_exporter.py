@@ -256,12 +256,12 @@ class VASTCollector(object):
                 gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
                 for fqn in fqns:
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
-                        labels = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, 'deleted')] if scope == 'cnode' else []
+                        label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, 'deleted')] if scope == 'cnode' else []
                         try:
-                            labels.append(descriptor.fqn_to_tag_value[fqn])
+                            label_values.append(descriptor.fqn_to_tag_value[fqn])
                         except KeyError: # untagged metric
                             pass
-                        gauge.add_metric(labels, value)
+                        gauge.add_metric(label_values, value)
                 yield gauge
 
     def _collect_cluster(self):
