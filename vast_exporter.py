@@ -333,7 +333,7 @@ class VASTCollector(object):
     VIEW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
 
     def _get_view_metrics(self):
-        res = self._client.get('iodata', {'time_frame': '3m', 'results_num': 100000})
+        res = self._client.get('iodata', {'time_frame': '5m'})
         rows = [i for i in res['data'] if i['timestamp'] == res['timestamp']] # filter latest records
 
         view_to_metrics = {}
