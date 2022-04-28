@@ -15,6 +15,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
+MISSING_USER_NAME_LABEL = 'NONE'
+DELETED_OBJECT_LABEL = 'DELETED'
+
 DEFAULT_PORT = 8000
 VMS_CONCURRENT_REQUESTS = 4
 
@@ -208,7 +211,7 @@ class VASTCollector(object):
         with self.collection_timer.time():
             phase_1_collectors = [self._collect_cluster()] # must be first, initializes the cluster name (required by all metrics)
             phase_2_collectors = [self._collect_nodes()] # must be second, for collecting cnode host names and IPs (required by metrics)
-            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views()]
+            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views(), self._collect_users()]
             phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=VMS_CONCURRENT_REQUESTS) as executor:
@@ -258,7 +261,7 @@ class VASTCollector(object):
                 gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
                 for fqn in fqns:
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
-                        label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, 'deleted')] if scope == 'cnode' else []
+                        label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)] if scope == 'cnode' else []
                         try:
                             label_values.append(descriptor.fqn_to_tag_value[fqn])
                         except KeyError: # untagged metric
@@ -316,7 +319,7 @@ class VASTCollector(object):
         nics = self._client.get('nics')
         nic_active = self._create_labeled_gauge('nic_active', 'NIC Active', labels=['hostname', 'display_name'])
         for nic in nics:
-            nic_active.add_metric((self._node_ip_to_hostname.get(nic['host'], 'deleted'), nic['display_name']), nic['state'] == 'up')
+            nic_active.add_metric((self._node_ip_to_hostname.get(nic['host'], DELETED_OBJECT_LABEL), nic['display_name']), nic['state'] == 'up')
         yield nic_active
         
         fans = self._client.get('fans')
@@ -333,17 +336,19 @@ class VASTCollector(object):
             psu_active.add_metric(extract_keys(psu, psu_labels), psu['state'] == 'up')
         yield psu_active
 
-    VIEW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
+    FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
 
-    def _get_view_metrics(self):
+    def _get_iodata(self):
         res = self._client.get('iodata', {'time_frame': '5m'})
-        rows = [i for i in res['data'] if i['timestamp'] == res['timestamp']] # filter latest records
-
+        return [i for i in res['data'] if i['timestamp'] == res['timestamp']] # filter latest records
+    
+    def _get_view_metrics(self):
+        rows = self._get_iodata()
         view_to_metrics = {}
         for row in rows:
             name = re.sub('(.+?) ?\(.+?\)', "\g<1>", row['view']) # default format is 'name (alias)'
             metrics = view_to_metrics.setdefault(name, {})
-            for metric in self.VIEW_METRICS:
+            for metric in self.FLOW_METRICS:
                 metrics[metric] = metrics.get(metric, 0) + row[metric]
 
         return view_to_metrics
@@ -362,12 +367,32 @@ class VASTCollector(object):
         yield view_physical_capacity
 
         view_metrics = self._get_view_metrics()
-        for metric in self.VIEW_METRICS:
+        for metric in self.FLOW_METRICS:
             gauge = self._create_labeled_gauge('view_' + metric, 'View ' + metric, labels=view_labels)
             for path, metrics in view_metrics.items():
                 if not path in path_to_view:
                     continue
                 gauge.add_metric(extract_keys(path_to_view[path], view_labels), metrics[metric])
+            yield gauge
+
+    def _collect_users(self):
+        rows = self._get_iodata()
+        user_metrics = {}
+        for row in rows:
+            if row['user'].startswith('('):
+                name, user_id = row['user'].split(') ')
+                name = name.strip('(')
+            else:
+                name, user_id = MISSING_USER_NAME_LABEL, row['user']
+            metrics = user_metrics.setdefault((name, user_id), {})
+            for metric in self.FLOW_METRICS:
+                metrics[metric] = metrics.get(metric, 0) + row[metric]
+
+        user_labels = ['name', 'id']
+        for metric in self.FLOW_METRICS:
+            gauge = self._create_labeled_gauge('user_' + metric, 'User ' + metric, labels=user_labels)
+            for (name, user_id), metrics in user_metrics.items():
+                gauge.add_metric((name or 'none', user_id), metrics[metric])
             yield gauge
 
     def _collect_logical(self):
