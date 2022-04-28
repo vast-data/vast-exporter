@@ -290,8 +290,9 @@ class VASTCollector(object):
             for node in nodes:
                 self._node_ip_to_hostname[node['ip']] = node['hostname']
                 self._node_id_to_hostname[node_type][node['id']] = node['hostname']
-                node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (node['is_mgmt'] and node['state'] == 'INACTIVE'))
-                node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not node['is_mgmt'])
+                is_mgmt = node['is_mgmt'] if node_type == 'cnode' else False
+                node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (is_mgmt and node['state'] == 'INACTIVE'))
+                node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not is_mgmt)
                 node_failed.add_metric(extract_keys(node, node_labels), node['state'] in ('FAILED', 'FAILED'))
             yield node_active
             yield node_inactive
