@@ -6,6 +6,7 @@ import urllib3
 import http
 import json
 import time
+import sys
 import os
 import re
 from prometheus_client import start_http_server
@@ -34,6 +35,7 @@ def parse_args():
     add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file')
     add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name')
     add_argument('VAST_COLLECTOR_DEBUG', '--debug', action='store_true')
+    add_argument('VAST_COLLECTOR_TEST', '--test', action='store_true')
     return parser.parse_args()
 
 class RESTFailure(Exception): pass
@@ -396,15 +398,22 @@ def main():
     params = vars(args)
     port = params.pop('port')
     debug = params.pop('debug')
+    test = params.pop('test')
     logging.basicConfig(format='%(asctime)s %(threadName)s %(levelname)s: %(message)s', level=logging.DEBUG if debug else logging.INFO)
     logger.info(f'VAST Exporter started running. Listening on port {port}')
     start_http_server(port=port)
     client = VASTClient(**params)
+    collector = VASTCollector(client)
+    REGISTRY.register(collector)
 
-    REGISTRY.register(VASTCollector(client))
-
-    while True: time.sleep(5)
+    if test:
+        success = collector.error_counter._value.get() == 0
+        logger.info(f'Collection {"is successful!" if success else "failed!"}')
+        sys.exit(0 if success else 1)
+    else:
+        while True: time.sleep(5)
 
 if __name__ == '__main__':
     main()
 
+l
