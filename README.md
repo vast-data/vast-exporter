@@ -36,9 +36,20 @@ Installation Using Python
 Testing
 -------
 
+To run the exporter once and make sure no errors are raised run the following:
+
     $ ./vast_exporter.py --user=<USER> --password=<PASSWORD> --address=<ADDRESS> --test
     2022-04-28 11:36:47,045 MainThread INFO: VAST Exporter started running. Listening on port 8001
     2022-04-28 11:36:58,658 MainThread INFO: Collection is successful!
+
+To run the exporter forever remove the --test parameter and get the output using curl:
+
+    $ curl http://localhost:8000 | grep vast_collector
+    # HELP vast_collector_latency Total collection time
+    # TYPE vast_collector_latency summary
+    vast_collector_latency_count 1.0
+    vast_collector_latency_sum 7.011876339
+    ...
 
 
 Monitoring
