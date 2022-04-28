@@ -33,6 +33,14 @@ Installation Using Python
     $ ./vast_exporter.py --user=<USER> --password=<PASSWORD> --address=<ADDRESS>
 
 
+Testing
+-------
+
+    $ ./vast_exporter.py --user=<USER> --password=<PASSWORD> --address=<ADDRESS> --test
+    2022-04-28 11:36:47,045 MainThread INFO: VAST Exporter started running. Listening on port 8001
+    2022-04-28 11:36:58,658 MainThread INFO: Collection is successful!
+
+
 Monitoring
 ----------
 
