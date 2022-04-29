@@ -399,8 +399,8 @@ class VASTCollector(object):
                 name = MISSING_USER_NAME_LABEL
                 if self._resolve_uid:
                     try:
-                        name = pwd.getpwuid(501).pw_name
-                    except KeyError:
+                        name = pwd.getpwuid(int(uid)).pw_name
+                    except (KeyError, ValueError):
                         pass
             metrics = user_metrics.setdefault((name, uid), {})
             for metric in self.FLOW_METRICS:
