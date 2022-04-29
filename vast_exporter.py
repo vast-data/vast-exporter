@@ -32,16 +32,20 @@ def parse_args():
         else:
             parser.add_argument(*args, **kwargs)
 
-    add_argument('VAST_COLLECTOR_USER', '--user', required=True)
-    add_argument('VAST_COLLECTOR_PASSWORD', '--password', required=True)
-    add_argument('VAST_COLLECTOR_ADDRESS', '--address', required=True)
-    add_argument('VAST_COLLECTOR_PORT', '--port', default=DEFAULT_PORT, type=int)
-    add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file')
-    add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name')
-    add_argument('VAST_COLLECTOR_COLLECT_TOP_USERS', '--collect-top-users', action='store_true')
-    add_argument('VAST_COLLECTOR_RESOLVE_UID', '--resolve-uid', action='store_true')
-    add_argument('VAST_COLLECTOR_DEBUG', '--debug', action='store_true')
-    add_argument('VAST_COLLECTOR_TEST', '--test', action='store_true')
+    add_argument('VAST_COLLECTOR_USER', '--user', required=True, help='VMS user name')
+    add_argument('VAST_COLLECTOR_PASSWORD', '--password', required=True, help='VMS password')
+    add_argument('VAST_COLLECTOR_ADDRESS', '--address', required=True, help='VMS address or host name')
+    add_argument('VAST_COLLECTOR_PORT', '--port', default=DEFAULT_PORT, type=int,
+                 help='Port to listen to for incoming connections from Prometheus')
+    add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file', help='Path to custom SSL certificate for VMS')
+    add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name', help='Address of custom SSL certificate authority')
+    add_argument('VAST_COLLECTOR_COLLECT_TOP_USERS', '--collect-top-users', action='store_true',
+                 help='Collect metrics data for top users (may cause a proliferation of distinct metrics)')
+    add_argument('VAST_COLLECTOR_RESOLVE_UID', '--resolve-uid', action='store_true',
+                 help='Resolve user ID using /etc/passwd in case the system is not able to resolve it')
+    add_argument('VAST_COLLECTOR_DEBUG', '--debug', action='store_true', help='Drop into a debugger on error')
+    add_argument('VAST_COLLECTOR_TEST', '--test', action='store_true',
+                 help='Run the collector once and indicate whether it succeeded in the return code')
     return parser.parse_args()
 
 class RESTFailure(Exception): pass

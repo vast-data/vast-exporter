@@ -11,27 +11,34 @@ Content
 1. Cluster capacity and states.
 2. Physical component states (NIC, node, drive, etc').
 2. View path and capacity information.
-4. Performance metrics (BW/IOPS/latency/etc').
+4. Performance metrics (BW/IOPS/latency/etc') for cluster, nodes, views and top users.
 
 Pre-requisities
 ---------------
 
-Cluster of version 4.2 and up. Contact support in case you need an older version supported.
+Cluster of version 4.2 and up.
 
-Installation Using Docker
--------------------------
+Docker Installation
+-------------------
 
     # build a local docker image
     $ ./build.sh
     # run a docker container in the background
     $ ./run.sh --user=<USER> --password=<PASSWORD> --address=<ADDRESS>
 
-Installation Using Python
--------------------------
+Python Installation
+-------------------
 
     $ pip install -r requirements.txt
     $ ./vast_exporter.py --user=<USER> --password=<PASSWORD> --address=<ADDRESS>
 
+
+Usage
+-----
+
+Beyond the user/password/address parameters which are required there are optional parameters.
+Optional features inlude specifying a custom SSL certificate and collection of top user performance data.
+Run the exporter with --help to see a description.
 
 Testing
 -------
