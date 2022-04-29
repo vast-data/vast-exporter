@@ -7,6 +7,7 @@ import http
 import json
 import time
 import sys
+import pwd
 import os
 import re
 from prometheus_client import start_http_server
@@ -37,6 +38,8 @@ def parse_args():
     add_argument('VAST_COLLECTOR_PORT', '--port', default=DEFAULT_PORT, type=int)
     add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file')
     add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name')
+    add_argument('VAST_COLLECTOR_COLLECT_TOP_USERS', '--collect-top-users', action='store_true')
+    add_argument('VAST_COLLECTOR_RESOLVE_UID', '--resolve-uid', action='store_true')
     add_argument('VAST_COLLECTOR_DEBUG', '--debug', action='store_true')
     add_argument('VAST_COLLECTOR_TEST', '--test', action='store_true')
     return parser.parse_args()
@@ -198,8 +201,10 @@ class WrappedGauge(GaugeMetricFamily):
         return super(WrappedGauge, self).add_metric(labels, value)
 
 class VASTCollector(object):
-    def __init__(self, client):
+    def __init__(self, client, resolve_uid=False, collect_top_users=False):
         self._client = client
+        self._resolve_uid = resolve_uid
+        self._should_collect_top_users = collect_top_users
         self._cluster_name = None
         self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
         self._node_ip_to_hostname = {}
@@ -211,8 +216,11 @@ class VASTCollector(object):
         with self.collection_timer.time():
             phase_1_collectors = [self._collect_cluster()] # must be first, initializes the cluster name (required by all metrics)
             phase_2_collectors = [self._collect_nodes()] # must be second, for collecting cnode host names and IPs (required by metrics)
-            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views(), self._collect_users()]
+            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views()]
             phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
+
+            if self._should_collect_top_users:
+                phase_3_collectors.append(self._collect_users())
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=VMS_CONCURRENT_REQUESTS) as executor:
                 for collectors in [phase_1_collectors, phase_2_collectors, phase_3_collectors]:
@@ -380,19 +388,25 @@ class VASTCollector(object):
         user_metrics = {}
         for row in rows:
             if row['user'].startswith('('):
-                name, user_id = row['user'].split(') ')
+                name, uid = row['user'].split(') ')
                 name = name.strip('(')
             else:
-                name, user_id = MISSING_USER_NAME_LABEL, row['user']
-            metrics = user_metrics.setdefault((name, user_id), {})
+                uid = row['user']
+                name = MISSING_USER_NAME_LABEL
+                if self._resolve_uid:
+                    try:
+                        name = pwd.getpwuid(501).pw_name
+                    except KeyError:
+                        pass
+            metrics = user_metrics.setdefault((name, uid), {})
             for metric in self.FLOW_METRICS:
                 metrics[metric] = metrics.get(metric, 0) + row[metric]
 
         user_labels = ['name', 'id']
         for metric in self.FLOW_METRICS:
             gauge = self._create_labeled_gauge('user_' + metric, 'User ' + metric, labels=user_labels)
-            for (name, user_id), metrics in user_metrics.items():
-                gauge.add_metric((name or 'none', user_id), metrics[metric])
+            for (name, uid), metrics in user_metrics.items():
+                gauge.add_metric((name or 'none', uid), metrics[metric])
             yield gauge
 
     def _collect_logical(self):
@@ -425,11 +439,13 @@ def main():
     port = params.pop('port')
     debug = params.pop('debug')
     test = params.pop('test')
+    resolve_uid = params.pop('resolve_uid')
+    collect_top_users = params.pop('collect_top_users')
     logging.basicConfig(format='%(asctime)s %(threadName)s %(levelname)s: %(message)s', level=logging.DEBUG if debug else logging.INFO)
     logger.info(f'VAST Exporter started running. Listening on port {port}')
     start_http_server(port=port)
     client = VASTClient(**params)
-    collector = VASTCollector(client)
+    collector = VASTCollector(client, resolve_uid=resolve_uid, collect_top_users=collect_top_users)
     REGISTRY.register(collector)
 
     if test:
