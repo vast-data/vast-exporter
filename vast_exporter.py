@@ -205,7 +205,20 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             'rx_crc_errors_phy',
                                             'rx_buff_alloc_err',
                                             'rx_symbol_err_phy',
-                                            'rx_in_range_len_errors_phy'])]
+                                            'rx_in_range_len_errors_phy']),
+               MetricDescriptor(class_name='Hardware',
+                                scopes=['ssd', 'nvram'],
+                                tags={'component': ['disk']},
+                                properties=['endurance',
+                                            'temperature',
+                                            'media_errors',
+                                            'read_count',
+                                            'read_bytes',
+                                            'write_count',
+                                            'write_bytes',
+                                            'await',
+                                            'power_on_hours',
+                                            'power_cycles'])]
 
 class WrappedGauge(GaugeMetricFamily):
     def __init__(self, name, help_text, labels, cluster_name):
@@ -227,6 +240,7 @@ class VASTCollector(object):
         self._node_ip_to_node_id_and_type = {} # 172.16.3.1 -> (1, 'cnode')
         self._nic_id_to_ip = {}
         self._nic_id_to_display_name = {}
+        self._drive_id_to_info = {'ssd': {}, 'nvram': {}}
 
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
@@ -281,6 +295,8 @@ class VASTCollector(object):
                 labels = ['cnode_id', 'hostname']
             elif scope == 'nic':
                 labels = ['hostname', 'display_name']
+            elif scope in {'ssd', 'nvram'}:
+                labels = ['guid', 'sn', 'title']
             else:
                 labels = []
             table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
@@ -302,6 +318,12 @@ class VASTCollector(object):
                             node_id, node_type = self._node_ip_to_node_id_and_type.get(node_ip)
                             label_values = [self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL),
                                             self._nic_id_to_display_name.get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope in {'ssd', 'nvram'}:
+                            try:
+                                info = self._drive_id_to_info[scope][object_id]
+                            except KeyError:
+                                continue
+                            label_values = [info['guid'], info['sn'], info['title']]
                         else:
                             label_values = []
                         try:
@@ -352,6 +374,7 @@ class VASTCollector(object):
             drive_inactive = self._create_labeled_gauge(drive_type + '_inactive', drive_type.upper() + ' Inctive', labels=drive_labels)
             drive_failed = self._create_labeled_gauge(drive_type + '_failed', drive_type.upper() + ' Failed', labels=drive_labels)
             for drive in drives:
+                self._drive_id_to_info[drive_type][drive['id']] = drive
                 drive_active.add_metric(extract_keys(drive, drive_labels), drive['state'] in ('ACTIVE', 'ACTIVATING'))
                 drive_inactive.add_metric(extract_keys(drive, drive_labels), drive['state'] in ('INACTIVE', 'DEACTIVATING', 'PHASING_OUT', 'ENTER_PHASING_OUT', 'EXIT_PHASING_OUT'))
                 drive_failed.add_metric(extract_keys(drive, drive_labels), drive['state'] in ('FAILED', 'FAILED'))
