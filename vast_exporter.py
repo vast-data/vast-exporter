@@ -88,9 +88,10 @@ def extract_keys(obj, keys):
     return [str(obj[k]) for k in keys]
 
 class MetricDescriptor(object):
-    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='2m'):
+    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='2m', scopes=['cnode', 'cluster']):
         self.class_name = class_name
         self.time_frame = time_frame
+        self.scopes = scopes
         self.properties = properties or []
         self.histograms = histograms or []
         for i in self.histograms:
@@ -192,7 +193,19 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             'nfs_fsinfo_latency',
                                             'nfs_pathconf_latency',
                                             'nfs_read_latency',
-                                            'nfs_write_latency'])]
+                                            'nfs_write_latency']),
+               MetricDescriptor(class_name='Hardware',
+                                scopes=['nic'],
+                                tags={'component': ['nic']},
+                                properties=['bytes_recv',
+                                            'bytes_sent',
+                                            'tx_errors',
+                                            'rx_errors',
+                                            'tx_errors_phy',
+                                            'rx_crc_errors_phy',
+                                            'rx_buff_alloc_err',
+                                            'rx_symbol_err_phy',
+                                            'rx_in_range_len_errors_phy'])]
 
 class WrappedGauge(GaugeMetricFamily):
     def __init__(self, name, help_text, labels, cluster_name):
@@ -211,7 +224,9 @@ class VASTCollector(object):
         self._should_collect_top_users = collect_top_users
         self._cluster_name = None
         self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
-        self._node_ip_to_hostname = {}
+        self._node_ip_to_node_id_and_type = {} # 172.16.3.1 -> (1, 'cnode')
+        self._nic_id_to_ip = {}
+        self._nic_id_to_display_name = {}
 
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
@@ -259,10 +274,15 @@ class VASTCollector(object):
                 unique_rows.append(row)
         columns = zip(*unique_rows)
         return dict(zip(result['prop_list'], columns))
-            
+
     def _collect_perf_metrics(self, descriptor):
-        for scope in ['cluster', 'cnode']:
-            labels = ['cnode_id', 'hostname'] if scope == 'cnode' else []
+        for scope in descriptor.scopes:
+            if scope == 'cnode':
+                labels = ['cnode_id', 'hostname']
+            elif scope == 'nic':
+                labels = ['hostname', 'display_name']
+            else:
+                labels = []
             table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
             if not table:
                 logger.error(f'Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
@@ -273,12 +293,23 @@ class VASTCollector(object):
                 gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
                 for fqn in fqns:
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
-                        label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)] if scope == 'cnode' else []
+                        if scope == 'cnode':
+                            label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope == 'nic':
+                            node_ip = self._nic_id_to_ip.get(object_id, DELETED_OBJECT_LABEL)
+                            if node_ip not in self._node_ip_to_node_id_and_type:
+                                continue
+                            node_id, node_type = self._node_ip_to_node_id_and_type.get(node_ip)
+                            label_values = [self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL),
+                                            self._nic_id_to_display_name.get(object_id, DELETED_OBJECT_LABEL)]
+                        else:
+                            label_values = []
                         try:
                             label_values.append(descriptor.fqn_to_tag_value[fqn])
                         except KeyError: # untagged metric
                             pass
-                        gauge.add_metric(label_values, value)
+                        if value is not None: # expected for things like NIC metrics
+                            gauge.add_metric(label_values, value)
                 yield gauge
 
     def _collect_cluster(self):
@@ -303,7 +334,7 @@ class VASTCollector(object):
             node_inactive = self._create_labeled_gauge(node_type + '_inactive', node_type.capitalize() + ' Inctive', labels=node_labels)
             node_failed = self._create_labeled_gauge(node_type + '_failed', node_type.capitalize() + ' Failed', labels=node_labels)
             for node in nodes:
-                self._node_ip_to_hostname[node['ip']] = node['hostname']
+                self._node_ip_to_node_id_and_type[node['ip']] = (node['id'], node_type)
                 self._node_id_to_hostname[node_type][node['id']] = node['hostname']
                 is_mgmt = node['is_mgmt'] if node_type == 'cnode' else False
                 node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (is_mgmt and node['state'] == 'INACTIVE'))
@@ -331,7 +362,10 @@ class VASTCollector(object):
         nics = self._client.get('nics')
         nic_active = self._create_labeled_gauge('nic_active', 'NIC Active', labels=['hostname', 'display_name'])
         for nic in nics:
-            nic_active.add_metric((self._node_ip_to_hostname.get(nic['host'], DELETED_OBJECT_LABEL), nic['display_name']), nic['state'] == 'up')
+            node_id, node_type = self._node_ip_to_node_id_and_type.get(nic['host'], DELETED_OBJECT_LABEL)
+            self._nic_id_to_ip[nic['id']] = nic['host']
+            self._nic_id_to_display_name[nic['id']] = nic['display_name']
+            nic_active.add_metric((self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL), nic['display_name']), nic['state'] == 'up')
         yield nic_active
         
         fans = self._client.get('fans')
