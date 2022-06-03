@@ -70,7 +70,7 @@ class VASTClient(object):
             logger.debug(f'Sending request with url={url} and parameters={params}')
             r = pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
         if r.status != http.HTTPStatus.OK:
-            raise RESTFailure(f'Response for request {url} failed with error {r.status} and message {r.data}')
+            raise RESTFailure(f'Response for request {url} with {params} failed with error {r.status} and message {r.data}')
         return json.loads(r.data.decode('utf-8'))
 
     def get(self, url, params=None):
@@ -251,8 +251,50 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 properties=['v_in',
                                             'temperature',
                                             'input_power',
-                                            'total_power'])
-            ]
+                                            'total_power']),
+               # defrag metrics
+               MetricDescriptor(class_name='RaidMetrics',
+                                time_frame='8m',
+                                histograms=['defrag_freed_capacity_mb']),
+               MetricDescriptor(class_name='DefragMetrics',
+                                time_frame='8m',
+                                tags={'shard_type': ['1']},
+                                histograms=['defrag_flash_read_size_kb']),
+               # as of 4.4
+               # MetricDescriptor(class_name='RaidMaintenanceMetrics',
+               #                 time_frame='8m',
+               #                 tags={'op': ['RaidMaintenanceManagerType.DEFRAG']},
+               #                 histograms=['stripe_backlog', 'data_backlog_mb']),
+               # migrate metrics
+               # as of 4.4
+               #MetricDescriptor(class_name='ParallelReaderMetrics',
+               #                 time_frame='8m',
+               #                 histograms=['reader_nvram_read_size_kb']),
+               MetricDescriptor(class_name='EStoreMigrateMetrics',
+                                time_frame='8m',
+                                tags={'name': ['migrate']},
+                                histograms=['physical_size']),
+               MetricDescriptor(class_name='ShardMdMetrics',
+                                time_frame='8m',
+                                histograms=['migrating_buffers_percent',
+                                            'delete_snap_backlog']),
+               # delete metrics
+               MetricDescriptor(class_name='DeleteMetrics',
+                                time_frame='8m',
+                                histograms=['delete_element_backlog']),
+               # utilization metrics
+               MetricDescriptor(class_name='IOComposerMetrics',
+                                time_frame='8m',
+                                histograms=['substripe_fill_efficiency_percent']),
+               MetricDescriptor(class_name='RaidMetrics',
+                                time_frame='8m',
+                                histograms=['stripe_available_percent']),
+               # ingest metrics
+               MetricDescriptor(class_name='IngestMetrics',
+                                scopes=['cluster'],
+                                time_frame='8m',
+                                tags={'ingest_client_type': ['IngestClientType.INGEST']},
+                                histograms=['stress_sleep_length'])]
 
 class WrappedGauge(GaugeMetricFamily):
     def __init__(self, name, help_text, labels, cluster_name):
