@@ -239,6 +239,8 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             'w_mbs',
                                             'r_await',
                                             'w_await',
+                                            'write_count',
+                                            'read_count',
                                             'power_on_hours',
                                             'power_cycles']),
                MetricDescriptor(class_name='Hardware',
@@ -384,6 +386,9 @@ class VASTCollector(object):
                 valid_name = f'{scope}_metrics_{descriptor.class_name}_{prop.replace("__", "_").replace("num_samples", "count")}'
                 gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
                 for fqn in fqns:
+                    if fqn not in table:
+                        logger.info("metric missing: " + fqn)
+                        continue
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
                         if scope == 'cnode':
                             label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)]
