@@ -327,7 +327,7 @@ class VASTCollector(object):
         with self.collection_timer.time():
             phase_1_collectors = [self._collect_cluster()] # must be first, initializes the cluster name (required by all metrics)
             phase_2_collectors = [self._collect_nodes()] # must be second, for collecting cnode host names and IPs (required by metrics)
-            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views()]
+            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views(), self._collect_quotas()]
             phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
 
             if self._should_collect_top_users:
@@ -357,7 +357,10 @@ class VASTCollector(object):
                                                             ('time_frame', time_frame)] + properties)
         rows = result['data']
         # take the latest row per per object id
-        index_of_id = result['prop_list'].index('object_id')
+        try:
+            index_of_id = result['prop_list'].index('object_id')
+        except ValueError:
+            return {}
         seen = set()
         unique_rows = []
         for row in reversed(rows):
@@ -524,6 +527,29 @@ class VASTCollector(object):
                     continue
                 gauge.add_metric(extract_keys(path_to_view[path], view_labels), metrics[metric])
             yield gauge
+
+    def _collect_quotas(self):
+        quotas = self._client.get('quotas')
+        quota_labels = ['path', 'title', 'guid']
+        quota_used_inodes = self._create_labeled_gauge('quota_used_inodes', 'Quota Used Inodes', labels=quota_labels)
+        quota_used_capacity = self._create_labeled_gauge('quota_used_capacity', 'Quota Used Capacity', labels=quota_labels)
+        quota_num_exceeded_users = self._create_labeled_gauge('quota_num_exceeded_users', 'Quota Number Of Exceeded Users', labels=quota_labels)
+        quota_num_blocked_users = self._create_labeled_gauge('quota_num_blocked_users', 'Quota Number Of Blocked Users', labels=quota_labels)
+        quota_ok = self._create_labeled_gauge('quota_ok', 'Quota State Is OK', labels=quota_labels)
+
+        path_to_view = {}
+        for quota in quotas:
+            quota_used_inodes.add_metric(extract_keys(quota, quota_labels), quota['used_inodes'])
+            quota_used_capacity.add_metric(extract_keys(quota, quota_labels), quota['used_capacity'])
+            quota_num_exceeded_users.add_metric(extract_keys(quota, quota_labels), quota['num_exceeded_users'])
+            quota_num_blocked_users.add_metric(extract_keys(quota, quota_labels), quota['num_blocked_users'])
+            quota_ok.add_metric(extract_keys(quota, quota_labels), quota['state'] == 'OK')
+
+        yield quota_used_inodes
+        yield quota_used_capacity
+        yield quota_num_exceeded_users
+        yield quota_num_blocked_users
+        yield quota_ok
 
     def _collect_users(self):
         rows = self._get_iodata()
