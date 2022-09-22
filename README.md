@@ -10,7 +10,7 @@ Content
 
 1. Cluster capacity and states.
 2. Physical component states (NIC, node, drive, etc').
-2. View path and capacity information.
+3. Logical objects: view, quota, replication targets, etc'.
 4. Performance metrics (BW/IOPS/latency/etc') for cluster, nodes, views and top users.
 
 Pre-requisities
