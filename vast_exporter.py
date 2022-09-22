@@ -421,6 +421,7 @@ class VASTCollector(object):
     def _collect_cluster(self):
         cluster, = self._client.get('clusters')
         self._cluster_name = cluster['name']
+        yield self._create_gauge('cluster_version', 'Cluster Version', int(cluster['sw_version'].replace('.','')))
         yield self._create_gauge('cluster_physical_space', 'Cluster Physical Space', cluster['physical_space'])
         yield self._create_gauge('cluster_logical_space', 'Cluster Logical Space', cluster['logical_space'])
         yield self._create_gauge('cluster_physical_space_in_use', 'Cluster Physical Space In Use', cluster['physical_space_in_use'])
