@@ -536,20 +536,34 @@ class VASTCollector(object):
         quota_used_capacity = self._create_labeled_gauge('quota_used_capacity', 'Quota Used Capacity', labels=quota_labels)
         quota_num_exceeded_users = self._create_labeled_gauge('quota_num_exceeded_users', 'Quota Number Of Exceeded Users', labels=quota_labels)
         quota_num_blocked_users = self._create_labeled_gauge('quota_num_blocked_users', 'Quota Number Of Blocked Users', labels=quota_labels)
+        quota_soft_limit = self._create_labeled_gauge('quota_soft_limit', 'Quota Soft Limit', labels=quota_labels)
+        quota_soft_limit_inodes = self._create_labeled_gauge('quota_soft_limit_inodes', 'Quota Inodes Soft Limit', labels=quota_labels)
+        quota_hard_limit = self._create_labeled_gauge('quota_hard_limit', 'Quota Hard Limit', labels=quota_labels)
+        quota_hard_limit_inodes = self._create_labeled_gauge('quota_hard_limit_inodes', 'Quota Inodes Hard Limit', labels=quota_labels)
         quota_ok = self._create_labeled_gauge('quota_ok', 'Quota State Is OK', labels=quota_labels)
 
         path_to_view = {}
         for quota in quotas:
-            quota_used_inodes.add_metric(extract_keys(quota, quota_labels), quota['used_inodes'])
-            quota_used_capacity.add_metric(extract_keys(quota, quota_labels), quota['used_capacity'])
-            quota_num_exceeded_users.add_metric(extract_keys(quota, quota_labels), quota['num_exceeded_users'])
-            quota_num_blocked_users.add_metric(extract_keys(quota, quota_labels), quota['num_blocked_users'])
             quota_ok.add_metric(extract_keys(quota, quota_labels), quota['state'] == 'OK')
-
+            for metric, name in [(quota_used_inodes, 'used_inodes'),
+                                 (quota_used_capacity, 'used_capacity'),
+                                 (quota_num_exceeded_users, 'num_exceeded_users'),
+                                 (quota_num_blocked_users, 'num_blocked_users'),
+                                 (quota_soft_limit, 'soft_limit'),
+                                 (quota_soft_limit_inodes, 'soft_limit_inodes'),
+                                 (quota_hard_limit, 'hard_limit'),
+                                 (quota_hard_limit_inodes, 'hard_limit_inodes')]:
+                if quota[name] is not None:
+                    metric.add_metric(extract_keys(quota, quota_labels), quota[name])
+    
         yield quota_used_inodes
         yield quota_used_capacity
         yield quota_num_exceeded_users
         yield quota_num_blocked_users
+        yield quota_soft_limit
+        yield quota_soft_limit_inodes
+        yield quota_hard_limit
+        yield quota_hard_limit_inodes
         yield quota_ok
 
     def _collect_users(self):
