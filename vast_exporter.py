@@ -490,6 +490,17 @@ class VASTCollector(object):
             psu_active.add_metric(extract_keys(psu, psu_labels), psu['state'] == 'up')
         yield psu_active
 
+        switch_labels = ['guid', 'ip', 'display_name', 'id']
+        switch_active = self._create_labeled_gauge('switch_active', 'Switch Active', labels=switch_labels)
+        for switch in self._client.get('switches'):
+            switch_active.add_metric(extract_keys(switch, switch_labels), switch['state'] == 'OK')
+        yield switch_active
+
+        subnetmanagers = self._client.get('subnetmanager')
+        if subnetmanagers:
+            subnetmanager, = subnetmanagers
+            yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', subnetmanager['state'] == 'ACTIVE')
+
     FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
 
     def _get_iodata(self):
