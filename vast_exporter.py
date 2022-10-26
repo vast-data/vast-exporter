@@ -421,7 +421,8 @@ class VASTCollector(object):
     def _collect_cluster(self):
         cluster, = self._client.get('clusters')
         self._cluster_name = cluster['name']
-        yield self._create_gauge('cluster_version', 'Cluster Version', int(cluster['sw_version'].replace('.','')))
+        self._cluster_version = tuple(map(int, cluster['sw_version'].split('.'))) # comes in as 4.3.0.1, stored as (4, 3, 0, 1)
+        yield self._create_gauge('cluster_version', 'Cluster Version', int(''.join(str(i).zfill(2) for i in self._cluster_version))) # sent as 4030001
         yield self._create_gauge('cluster_physical_space', 'Cluster Physical Space', cluster['physical_space'])
         yield self._create_gauge('cluster_logical_space', 'Cluster Logical Space', cluster['logical_space'])
         yield self._create_gauge('cluster_physical_space_in_use', 'Cluster Physical Space In Use', cluster['physical_space_in_use'])
@@ -496,10 +497,11 @@ class VASTCollector(object):
             switch_active.add_metric(extract_keys(switch, switch_labels), switch['state'] == 'OK')
         yield switch_active
 
-        subnetmanagers = self._client.get('subnetmanager')
-        if subnetmanagers:
-            subnetmanager, = subnetmanagers
-            yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', subnetmanager['state'] == 'ACTIVE')
+        if self._cluster_version > (4, 2):
+            subnetmanagers = self._client.get('subnetmanager')    
+            if subnetmanagers:
+                subnetmanager, = subnetmanagers
+                yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', subnetmanager['state'] == 'ACTIVE')
 
     FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
 
