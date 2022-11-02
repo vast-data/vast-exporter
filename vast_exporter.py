@@ -298,15 +298,18 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 tags={'ingest_client_type': ['IngestClientType.INGEST']},
                                 histograms=['stress_sleep_length'])]
 
-class WrappedGauge(GaugeMetricFamily):
+class WrappedMetric(object):
     def __init__(self, name, help_text, labels, cluster_name):
-        super(WrappedGauge, self).__init__('vast_' + name, help_text, labels=['cluster'] + labels)
+        super(WrappedMetric, self).__init__('vast_' + name, help_text, labels=['cluster'] + labels)
         self._cluster_name = cluster_name
 
     def add_metric(self, labels, value):
         labels = list(labels)
         labels.insert(0, self._cluster_name)
-        return super(WrappedGauge, self).add_metric(labels, value)
+        return super(WrappedMetric, self).add_metric(labels, value)
+
+class WrappedGauge(WrappedMetric, GaugeMetricFamily): pass
+class WrappedCounter(WrappedMetric, CounterMetricFamily): pass
 
 class VASTCollector(object):
     def __init__(self, client, resolve_uid=False, collect_top_users=False):
@@ -351,6 +354,9 @@ class VASTCollector(object):
     def _create_labeled_gauge(self, name, help_text, labels):
         return WrappedGauge(name, help_text, labels, self._cluster_name)
 
+    def _create_labeled_counter(self, name, help_text, labels):
+        return WrappedCounter(name, help_text, labels, self._cluster_name)
+
     def _get_metrics(self, scope, metric_names, time_frame):
         properties = [('prop_list', metric) for metric in metric_names]
         result = self._client.get('monitors/ad_hoc_query', [('object_type', scope),
@@ -387,7 +393,8 @@ class VASTCollector(object):
                 continue
             for prop, fqns in descriptor.property_to_fqn.items():
                 valid_name = f'{scope}_metrics_{descriptor.class_name}_{prop.replace("__", "_").replace("num_samples", "count")}'
-                gauge = self._create_labeled_gauge(valid_name, '', labels=labels + list(descriptor.tags))
+                factory = self._create_labeled_counter if prop.endswith(('__num_samples', '__sum')) else self._create_labeled_gauge
+                metric = factory(valid_name, '', labels=labels + list(descriptor.tags))
                 for fqn in fqns:
                     if fqn not in table:
                         logger.info("metric missing: " + fqn)
@@ -415,8 +422,8 @@ class VASTCollector(object):
                         except KeyError: # untagged metric
                             pass
                         if value is not None: # expected for things like NIC metrics
-                            gauge.add_metric(label_values, value)
-                yield gauge
+                            metric.add_metric(label_values, value)
+                yield metric
 
     def _collect_cluster(self):
         cluster, = self._client.get('clusters')
