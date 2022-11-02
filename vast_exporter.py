@@ -10,8 +10,9 @@ import sys
 import pwd
 import os
 import re
+from typing import Optional, Sequence, Union
 from prometheus_client import start_http_server
-from prometheus_client.core import GaugeMetricFamily, CounterMetricFamily, Summary, Counter, REGISTRY
+from prometheus_client.core import GaugeMetricFamily, Metric, Sample, Timestamp, Summary, Counter, REGISTRY
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
@@ -298,9 +299,30 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 tags={'ingest_client_type': ['IngestClientType.INGEST']},
                                 histograms=['stress_sleep_length'])]
 
-class WrappedMetric(object):
-    def __init__(self, name, help_text, labels, cluster_name):
-        super(WrappedMetric, self).__init__('vast_' + name, help_text, labels=['cluster'] + labels)
+class MetricFamily(Metric): # mostly copied from the client library
+    TYPE = None
+    def __init__(self,
+                 name: str,
+                 documentation: str,
+                 value: Optional[float] = None,
+                 labels: Optional[Sequence[str]] = None,
+                 unit: str = '',
+                 ):
+        Metric.__init__(self, name, documentation, self.TYPE, unit)
+        if labels is not None and value is not None:
+            raise ValueError('Can only specify at most one of value and labels.')
+        if labels is None:
+            labels = []
+        self._labelnames = tuple(labels)
+        if value is not None:
+            self.add_metric([], value)
+
+    def add_metric(self, labels: Sequence[str], value: float, timestamp: Optional[Union[Timestamp, float]] = None) -> None:
+        self.samples.append(Sample(self.name, dict(zip(self._labelnames, labels)), value, timestamp))
+
+class WrappedMetric(MetricFamily):
+    def __init__(self, name, documentation, cluster_name, labels=None, **kw):
+        super(WrappedMetric, self).__init__(name='vast_' + name, documentation=documentation, labels=['cluster'] + (labels or []))
         self._cluster_name = cluster_name
 
     def add_metric(self, labels, value):
@@ -308,8 +330,11 @@ class WrappedMetric(object):
         labels.insert(0, self._cluster_name)
         return super(WrappedMetric, self).add_metric(labels, value)
 
-class WrappedGauge(WrappedMetric, GaugeMetricFamily): pass
-class WrappedCounter(WrappedMetric, CounterMetricFamily): pass
+class WrappedGauge(WrappedMetric):
+    TYPE = 'gauge'
+
+class WrappedHistogram(WrappedMetric):
+    TYPE = 'histogram'
 
 class VASTCollector(object):
     def __init__(self, client, resolve_uid=False, collect_top_users=False):
@@ -346,16 +371,16 @@ class VASTCollector(object):
                             self.error_counter.inc()
                             logger.exception(f'Caught exception while collecting metrics: {e}')
     
-    def _create_gauge(self, name, help_text, value):
-        gauge = GaugeMetricFamily('vast_' + name, help_text, labels=['cluster'])
-        gauge.add_metric([self._cluster_name], value)
+    def _create_gauge(self, name, documentation, value):
+        gauge = WrappedGauge(name=name, documentation=documentation, cluster_name=self._cluster_name)
+        gauge.add_metric([], value)
         return gauge
 
-    def _create_labeled_gauge(self, name, help_text, labels):
-        return WrappedGauge(name, help_text, labels, self._cluster_name)
+    def _create_labeled_gauge(self, name, documentation, labels):
+        return WrappedGauge(name=name, documentation=documentation, labels=labels, cluster_name=self._cluster_name)
 
-    def _create_labeled_counter(self, name, help_text, labels):
-        return WrappedCounter(name, help_text, labels, self._cluster_name)
+    def _create_labeled_counter(self, name, documentation, labels):
+        return WrappedHistogram(name=name, documentation=documentation, labels=labels, cluster_name=self._cluster_name)
 
     def _get_metrics(self, scope, metric_names, time_frame):
         properties = [('prop_list', metric) for metric in metric_names]
