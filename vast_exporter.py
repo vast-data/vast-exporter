@@ -504,7 +504,7 @@ class VASTCollector(object):
             switch_active.add_metric(extract_keys(switch, switch_labels), switch['state'] == 'OK')
         yield switch_active
 
-        if self._cluster_version > (4, 2):
+        if self._cluster_version >= (4, 3):
             subnetmanagers = self._client.get('subnetmanager')    
             if subnetmanagers:
                 subnetmanager, = subnetmanagers
