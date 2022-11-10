@@ -656,7 +656,7 @@ class VASTCollector(object):
         replication_target_labels = ['name', 'bucket_name']
         replication_target_ok = self._create_labeled_gauge('s3_replication_target_ok', 'S3 Replication Target Is Okay', labels=replication_target_labels)
         for replication_target in replication_targets:
-            replication_target_ok.add_metric(extract_keys(replication_target, replication_target_labels), replication_target['status'] == 'OK')
+            replication_target_ok.add_metric(extract_keys(replication_target, replication_target_labels), replication_target['state'] == 'ACTIVE')
         yield replication_target_ok
 
 def main():
