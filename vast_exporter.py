@@ -11,7 +11,10 @@ import pwd
 import os
 import re
 from typing import Optional, Sequence, Union
-from prometheus_client import start_http_server
+from prometheus_client import make_wsgi_app
+from wsgiref.simple_server import make_server
+from prometheus_client.exposition import ThreadingWSGIServer, _SilentHandler, _get_best_family
+import threading 
 from prometheus_client.core import GaugeMetricFamily, Metric, Sample, Timestamp, Summary, Counter, REGISTRY
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -197,18 +200,6 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             'nfs_read_latency',
                                             'nfs_write_latency']),
                MetricDescriptor(class_name='Hardware',
-                                scopes=['nic'],
-                                tags={'component': ['nic']},
-                                properties=['bytes_recv',
-                                            'bytes_sent',
-                                            'tx_errors',
-                                            'rx_errors',
-                                            'tx_errors_phy',
-                                            'rx_crc_errors_phy',
-                                            'rx_buff_alloc_err',
-                                            'rx_symbol_err_phy',
-                                            'rx_in_range_len_errors_phy']),
-               MetricDescriptor(class_name='Hardware',
                                 scopes=['dbox'],
                                 tags={'component': ['box']},
                                 properties=['ambient_temp',
@@ -231,24 +222,6 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 scopes=['dnode'],
                                 tags={'component': ['node']},
                                 properties=['pci_switch_errors']),
-               MetricDescriptor(class_name='Hardware',
-                                scopes=['ssd', 'nvram'],
-                                tags={'component': ['disk']},
-                                properties=['endurance',
-                                            'temperature',
-                                            'media_errors',
-                                            'r_mbs',
-                                            'w_mbs',
-                                            'r_await',
-                                            'w_await',
-                                            'write_count',
-                                            'read_count',
-                                            'power_on_hours',
-                                            'power_cycles']),
-               MetricDescriptor(class_name='Hardware',
-                                scopes=['fan'],
-                                tags={'component': ['fan']},
-                                properties=['rpm']),
                MetricDescriptor(class_name='Hardware',
                                 scopes=['psu'],
                                 tags={'component': ['psu']},
@@ -345,9 +318,6 @@ class VASTCollector(object):
         self._cluster_name = None
         self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
         self._node_ip_to_node_id_and_type = {} # 172.16.3.1 -> (1, 'cnode')
-        self._nic_id_to_ip = {}
-        self._nic_id_to_display_name = {}
-        self._drive_id_to_info = {'ssd': {}, 'nvram': {}}
 
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
@@ -406,10 +376,6 @@ class VASTCollector(object):
         for scope in descriptor.scopes:
             if scope == 'cnode':
                 labels = ['cnode_id', 'hostname']
-            elif scope == 'nic':
-                labels = ['hostname', 'display_name']
-            elif scope in {'ssd', 'nvram'}:
-                labels = ['guid', 'sn', 'title']
             else:
                 labels = []
             table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
@@ -428,26 +394,13 @@ class VASTCollector(object):
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
                         if scope == 'cnode':
                             label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)]
-                        elif scope == 'nic':
-                            node_ip = self._nic_id_to_ip.get(object_id, DELETED_OBJECT_LABEL)
-                            if node_ip not in self._node_ip_to_node_id_and_type:
-                                continue
-                            node_id, node_type = self._node_ip_to_node_id_and_type.get(node_ip)
-                            label_values = [self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL),
-                                            self._nic_id_to_display_name.get(object_id, DELETED_OBJECT_LABEL)]
-                        elif scope in {'ssd', 'nvram'}:
-                            try:
-                                info = self._drive_id_to_info[scope][object_id]
-                            except KeyError:
-                                continue
-                            label_values = [info['guid'], info['sn'], info['title']]
                         else:
                             label_values = []
                         try:
                             label_values.append(descriptor.fqn_to_tag_value[fqn])
                         except KeyError: # untagged metric
                             pass
-                        if value is not None: # expected for things like NIC metrics
+                        if value is not None:
                             metric.add_metric(label_values, value)
                 yield metric
 
@@ -486,49 +439,12 @@ class VASTCollector(object):
             yield node_failed
 
     def _collect_physical(self):
-        drive_labels = ['guid', 'title', 'sn']
-        for drive_type in ['ssd', 'nvram']:
-            drives = self._client.get(drive_type + 's')
-            drive_active = self._create_labeled_gauge(drive_type + '_active', drive_type.upper() + ' Active', labels=drive_labels)
-            drive_inactive = self._create_labeled_gauge(drive_type + '_inactive', drive_type.upper() + ' Inctive', labels=drive_labels)
-            drive_failed = self._create_labeled_gauge(drive_type + '_failed', drive_type.upper() + ' Failed', labels=drive_labels)
-            for drive in drives:
-                self._drive_id_to_info[drive_type][drive['id']] = drive
-                drive_active.add_metric(extract_keys(drive, drive_labels), drive['state'] in ('ACTIVE', 'ACTIVATING'))
-                drive_inactive.add_metric(extract_keys(drive, drive_labels), drive['state'] in ('INACTIVE', 'DEACTIVATING', 'PHASING_OUT', 'ENTER_PHASING_OUT', 'EXIT_PHASING_OUT'))
-                drive_failed.add_metric(extract_keys(drive, drive_labels), drive['state'] in ('FAILED', 'FAILED'))
-            yield drive_active
-            yield drive_inactive
-            yield drive_failed
-
-        nics = self._client.get('nics')
-        nic_active = self._create_labeled_gauge('nic_active', 'NIC Active', labels=['hostname', 'display_name'])
-        for nic in nics:
-            node_id, node_type = self._node_ip_to_node_id_and_type.get(nic['host'], DELETED_OBJECT_LABEL)
-            self._nic_id_to_ip[nic['id']] = nic['host']
-            self._nic_id_to_display_name[nic['id']] = nic['display_name']
-            nic_active.add_metric((self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL), nic['display_name']), nic['state'] == 'up')
-        yield nic_active
-        
-        fans = self._client.get('fans')
-        fan_labels = ['box', 'location']
-        fan_active = self._create_labeled_gauge('fan_active', 'Fan Active', labels=fan_labels)
-        for fan in fans:
-            fan_active.add_metric(extract_keys(fan, fan_labels), fan['state'] == 'OK')
-        yield fan_active
-
         psus = self._client.get('psus')
         psu_labels = ['box', 'location']
         psu_active = self._create_labeled_gauge('psu_active', 'PSU Active', labels=psu_labels)
         for psu in psus:
             psu_active.add_metric(extract_keys(psu, psu_labels), psu['state'] == 'up')
         yield psu_active
-
-        switch_labels = ['guid', 'ip', 'display_name', 'id']
-        switch_active = self._create_labeled_gauge('switch_active', 'Switch Active', labels=switch_labels)
-        for switch in self._client.get('switches'):
-            switch_active.add_metric(extract_keys(switch, switch_labels), switch['state'] == 'OK')
-        yield switch_active
 
         if self._cluster_version >= (4, 3):
             subnetmanagers = self._client.get('subnetmanager')    
@@ -660,6 +576,27 @@ class VASTCollector(object):
             replication_target_ok.add_metric(extract_keys(replication_target, replication_target_labels), replication_target['state'] == 'ACTIVE')
         yield replication_target_ok
 
+def create_httpd_server(port: str=DEFAULT_PORT, addr: str='0.0.0.0'):
+
+    class TmpServer(ThreadingWSGIServer):
+        """Copy of ThreadingWSGIServer to update address_family locally"""
+
+    TmpServer.address_family, addr = _get_best_family(addr, port)
+
+    metrics_app = make_wsgi_app()
+
+    def app(environ, start_fn):
+        if environ['PATH_INFO'] == '/vastmetrics':
+            return metrics_app(environ, start_fn)
+
+        start_fn('404 NOT_FOUND', [('', '')])
+        return b''
+
+    httpd = make_server(addr, port, app, TmpServer, handler_class=_SilentHandler)
+    t = threading.Thread(target=httpd.serve_forever)
+    t.daemon = True
+    t.start()
+
 def main():
     os.environ['PROMETHEUS_DISABLE_CREATED_SERIES'] = 'True'
 
@@ -673,7 +610,7 @@ def main():
     collect_top_users = params.pop('collect_top_users')
     logging.basicConfig(format='%(asctime)s %(threadName)s %(levelname)s: %(message)s', level=logging.DEBUG if debug else logging.INFO)
     logger.info(f'VAST Exporter started running')
-    start_http_server(port=port, addr=bind_address)
+    create_httpd_server(port=port, addr=bind_address)
     client = VASTClient(**params)
     collector = VASTCollector(client, resolve_uid=resolve_uid, collect_top_users=collect_top_users)
     REGISTRY.register(collector)
