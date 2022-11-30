@@ -4,12 +4,13 @@ VAST Prometheus Exporter
 
 The Prometheus exporter connects to VMS and leverages its REST API to extract state and metric information.
 It listens to port 8000 by default. This can be changed using the --port parameter.
+VAST Prometheus exporter metrics are exposed in '/vastmetrics' path.
 
 Content
 -------
 
 1. Cluster capacity and states.
-2. Physical component states (NIC, node, drive, etc').
+2. Physical component states (node, drive, etc').
 3. Logical objects: view, quota, replication targets, etc'.
 4. Performance metrics (BW/IOPS/latency/etc') for cluster, nodes, views and top users.
 
@@ -78,9 +79,7 @@ The following snippet shows how to add the VAST exporter to Prometheus:
     scrape_configs:
       # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
       - job_name: "vast"
-
-        # metrics_path defaults to '/metrics'
-        # scheme defaults to 'http'.
+        metrics_path: '/vastmetrics'
 
         static_configs:
           - targets: ["<EXPORTER HOST>:8000"]
