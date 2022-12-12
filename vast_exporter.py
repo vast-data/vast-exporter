@@ -263,6 +263,7 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                # as of 4.4
                #MetricDescriptor(class_name='ParallelReaderMetrics',
                #                 time_frame='8m',
+               #                 tags={'name': ["migrate"]},
                #                 histograms=['reader_nvram_read_size_kb']),
                MetricDescriptor(class_name='EStoreMigrateMetrics',
                                 time_frame='8m',
