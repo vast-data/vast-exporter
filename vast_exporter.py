@@ -10,6 +10,7 @@ import sys
 import pwd
 import os
 import re
+from collections import defaultdict
 from typing import Optional, Sequence, Union
 from prometheus_client import start_http_server
 from prometheus_client.core import GaugeMetricFamily, Metric, Sample, Timestamp, Summary, Counter, REGISTRY
@@ -633,6 +634,7 @@ class VASTCollector(object):
     def _collect_users(self):
         rows = self._get_iodata()
         user_metrics = {}
+        user_connections = defaultdict(int)
         for row in rows:
             if row['user'].startswith('('):
                 name, uid = row['user'].split(') ')
@@ -648,6 +650,7 @@ class VASTCollector(object):
             metrics = user_metrics.setdefault((name, uid), {})
             for metric in self.FLOW_METRICS:
                 metrics[metric] = metrics.get(metric, 0) + row[metric]
+            user_connections[(name, uid)] += 1
 
         user_labels = ['name', 'id']
         for metric in self.FLOW_METRICS:
@@ -655,6 +658,11 @@ class VASTCollector(object):
             for (name, uid), metrics in user_metrics.items():
                 gauge.add_metric((name or 'none', uid), metrics[metric])
             yield gauge
+
+        gauge = self._create_labeled_gauge('user_connections', 'User Connections', labels=user_labels)
+        for (name, uid), count in user_connections.items():
+            gauge.add_metric((name or 'none', uid), count)
+        yield gauge
 
     def _collect_logical(self):
         for (provider_url, provider_name, provider_pretty) in [('nis', 'nis', 'NIS'),
