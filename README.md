@@ -81,7 +81,9 @@ The following snippet shows how to add the VAST exporter to Prometheus:
 
         # metrics_path defaults to '/metrics'
         # scheme defaults to 'http'.
-
+        scrape_interval: 1m
+        scrape_timeout: 50s
+        
         static_configs:
           - targets: ["<EXPORTER HOST>:8000"]
 
