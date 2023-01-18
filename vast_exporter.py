@@ -1,4 +1,4 @@
-#!/usr/local/bin/python3
+#!/usr/bin/env python3
 import concurrent.futures
 import argparse
 import logging
@@ -43,7 +43,9 @@ def parse_args():
     add_argument('VAST_COLLECTOR_CERT_FILE', '--cert-file', help='Path to custom SSL certificate for VMS')
     add_argument('VAST_COLLECTOR_CERT_SERVER', '--cert-server-name', help='Address of custom SSL certificate authority')
     add_argument('VAST_COLLECTOR_COLLECT_TOP_USERS', '--collect-top-users', action='store_true',
-                 help='Collect metrics data for top users (may cause a proliferation of distinct metrics)')
+                 help='Collect performance data for top users (may cause a proliferation of distinct metrics)')
+    add_argument('VAST_COLLECTOR_COLLECT_USER_QUOTAS', '--collect-user-quotas', action='store_true',
+                 help='Collect quota metrics for users/groups (may cause a proliferation of distinct metrics)')
     add_argument('VAST_COLLECTOR_RESOLVE_UID', '--resolve-uid', action='store_true',
                  help='Resolve user ID using /etc/passwd in case the system is not able to resolve it')
     add_argument('VAST_COLLECTOR_DEBUG', '--debug', action='store_true', help='Drop into a debugger on error')
@@ -357,10 +359,11 @@ class WrappedHistogram(WrappedMetric):
     TYPE = 'histogram'
 
 class VASTCollector(object):
-    def __init__(self, client, resolve_uid=False, collect_top_users=False):
+    def __init__(self, client, resolve_uid=False, collect_top_users=False, collect_user_quotas=False):
         self._client = client
         self._resolve_uid = resolve_uid
         self._should_collect_top_users = collect_top_users
+        self._should_collect_user_quotas = collect_user_quotas
         self._cluster_name = None
         self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
         self._node_ip_to_node_id_and_type = {} # 172.16.3.1 -> (1, 'cnode')
@@ -379,7 +382,7 @@ class VASTCollector(object):
             phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
 
             if self._should_collect_top_users:
-                phase_3_collectors.append(self._collect_users())
+                phase_3_collectors.append(self._collect_top_users())
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=VMS_CONCURRENT_REQUESTS) as executor:
                 for collectors in [phase_1_collectors, phase_2_collectors, phase_3_collectors]:
@@ -594,44 +597,72 @@ class VASTCollector(object):
                 gauge.add_metric(extract_keys(path_to_view[path], view_labels), metrics[metric])
             yield gauge
 
+    QUOTA_METRIC_TO_DESCRIPTION = {'used_inodes': 'Quota Used Inodes',
+                                   'used_capacity': 'Quota Used Capacity',
+                                   'soft_limit': 'Quota Soft Limit',
+                                   'soft_limit_inodes': 'Quota Inodes Soft Limit',
+                                   'hard_limit': 'Quota Hard Limit',
+                                   'hard_limit_inodes': 'Quota Inodes Hard Limit'}
     def _collect_quotas(self):
+        quota_metric_to_description = self.QUOTA_METRIC_TO_DESCRIPTION.copy()
+        quota_metric_to_description.update({'num_exceeded_users': 'Quota Number Of Exceeded Users',
+                                            'num_blocked_users': 'Quota Number Of Blocked Users'})
+        
         quotas = self._client.get('quotas')
         quota_labels = ['path', 'title', 'guid']
-        quota_used_inodes = self._create_labeled_gauge('quota_used_inodes', 'Quota Used Inodes', labels=quota_labels)
-        quota_used_capacity = self._create_labeled_gauge('quota_used_capacity', 'Quota Used Capacity', labels=quota_labels)
-        quota_num_exceeded_users = self._create_labeled_gauge('quota_num_exceeded_users', 'Quota Number Of Exceeded Users', labels=quota_labels)
-        quota_num_blocked_users = self._create_labeled_gauge('quota_num_blocked_users', 'Quota Number Of Blocked Users', labels=quota_labels)
-        quota_soft_limit = self._create_labeled_gauge('quota_soft_limit', 'Quota Soft Limit', labels=quota_labels)
-        quota_soft_limit_inodes = self._create_labeled_gauge('quota_soft_limit_inodes', 'Quota Inodes Soft Limit', labels=quota_labels)
-        quota_hard_limit = self._create_labeled_gauge('quota_hard_limit', 'Quota Hard Limit', labels=quota_labels)
-        quota_hard_limit_inodes = self._create_labeled_gauge('quota_hard_limit_inodes', 'Quota Inodes Hard Limit', labels=quota_labels)
         quota_ok = self._create_labeled_gauge('quota_ok', 'Quota State Is OK', labels=quota_labels)
+        quota_gauges = {}
+        for name, description in quota_metric_to_description.items():
+            quota_gauges[name] = self._create_labeled_gauge('quota_' + name, description, labels=quota_labels)
 
         path_to_view = {}
         for quota in quotas:
             quota_ok.add_metric(extract_keys(quota, quota_labels), quota['state'] == 'OK')
-            for metric, name in [(quota_used_inodes, 'used_inodes'),
-                                 (quota_used_capacity, 'used_capacity'),
-                                 (quota_num_exceeded_users, 'num_exceeded_users'),
-                                 (quota_num_blocked_users, 'num_blocked_users'),
-                                 (quota_soft_limit, 'soft_limit'),
-                                 (quota_soft_limit_inodes, 'soft_limit_inodes'),
-                                 (quota_hard_limit, 'hard_limit'),
-                                 (quota_hard_limit_inodes, 'hard_limit_inodes')]:
+            for name, metric in quota_gauges.items():
                 if quota[name] is not None:
                     metric.add_metric(extract_keys(quota, quota_labels), quota[name])
-    
-        yield quota_used_inodes
-        yield quota_used_capacity
-        yield quota_num_exceeded_users
-        yield quota_num_blocked_users
-        yield quota_soft_limit
-        yield quota_soft_limit_inodes
-        yield quota_hard_limit
-        yield quota_hard_limit_inodes
         yield quota_ok
+        for gauge in quota_gauges.values():
+            yield gauge
 
-    def _collect_users(self):
+        if self._should_collect_user_quotas:
+            yield from self._collect_user_quotas(quotas)
+
+    def _collect_user_quotas(self, quotas):
+        quota_metric_to_description = self.QUOTA_METRIC_TO_DESCRIPTION.copy()
+        quota_metric_to_description.update({'percent_capacity': 'Quota Capacity Percent Used',
+                                            'percent_inodes': 'Quota Inodes Percent Used'})
+        
+        entity_labels = ['path', 'identifier']
+        user_ok = self._create_labeled_gauge('user_quota_ok', 'User Quota State Is OK', labels=entity_labels)
+        group_ok = self._create_labeled_gauge('group_quota_ok', 'Group Quota State Is OK', labels=entity_labels)
+        user_gauges = {}
+        group_gauges = {}
+        for name, description in quota_metric_to_description.items():
+            user_gauges[name] = self._create_labeled_gauge('user_quota_' + name, 'User ' + description, labels=entity_labels)
+            group_gauges[name] = self._create_labeled_gauge('group_quota_' + name, 'Group ' + description, labels=entity_labels)
+
+        for quota in quotas:
+            result = self._client.get('userquotas', {'quota_system_id': quota['system_id']})
+            for entity in result['results']:
+                if entity['entity']['is_group']:
+                    ok_gauge = group_ok
+                    gauges = group_gauges
+                else:
+                    ok_gauge = user_ok
+                    gauges = user_gauges
+                identifier = entity['entity_identifier'] if 'entity_identifier' in entity else entity['entity_name'] # changed across VMS versions
+                labels = (quota['path'], identifier)
+                ok_gauge.add_metric(labels, entity['state'] == 'OK')
+                for name, metric in gauges.items():
+                    if entity[name] is not None:
+                        metric.add_metric(labels, entity[name])
+        yield user_ok
+        yield group_ok
+        yield from user_gauges.values()
+        yield from group_gauges.values()
+
+    def _collect_top_users(self):
         rows = self._get_iodata()
         user_metrics = {}
         user_connections = defaultdict(int)
@@ -697,11 +728,12 @@ def main():
     test = params.pop('test')
     resolve_uid = params.pop('resolve_uid')
     collect_top_users = params.pop('collect_top_users')
+    collect_user_quotas = params.pop('collect_user_quotas')
     logging.basicConfig(format='%(asctime)s %(threadName)s %(levelname)s: %(message)s', level=logging.DEBUG if debug else logging.INFO)
     logger.info(f'VAST Exporter started running')
     start_http_server(port=port, addr=bind_address)
     client = VASTClient(**params)
-    collector = VASTCollector(client, resolve_uid=resolve_uid, collect_top_users=collect_top_users)
+    collector = VASTCollector(client, resolve_uid=resolve_uid, collect_top_users=collect_top_users, collect_user_quotas=collect_user_quotas)
     REGISTRY.register(collector)
 
     if test:
