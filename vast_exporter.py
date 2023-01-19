@@ -476,7 +476,9 @@ class VASTCollector(object):
     def _collect_cluster(self):
         cluster, = self._client.get('clusters')
         self._cluster_name = cluster['name']
-        self._cluster_version = tuple(map(int, cluster['sw_version'].split('.'))) # comes in as 4.3.0.1, stored as (4, 3, 0, 1)
+        version_string = cluster['sw_version']
+        self._cluster_version = tuple(map(int, version_string.split('.'))) # comes in as 4.3.0.1, stored as (4, 3, 0, 1)
+        logger.info(f'Running against {self._cluster_name} with version {version_string}')
         yield self._create_gauge('cluster_version', 'Cluster Version', int(''.join(str(i).zfill(2) for i in self._cluster_version))) # sent as 4030001
         yield self._create_gauge('cluster_physical_space', 'Cluster Physical Space', cluster['physical_space'])
         yield self._create_gauge('cluster_logical_space', 'Cluster Logical Space', cluster['logical_space'])
