@@ -398,7 +398,7 @@ class VASTCollector(object):
                 labels = []
             table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
             if not table:
-                logger.error(f'Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
+                logger.debug(f'Failed requesting metrics on {scope} for {descriptor.class_name}: {descriptor.fqns}')
                 self.error_counter.inc()
                 continue
             for prop, fqns in descriptor.property_to_fqn.items():
