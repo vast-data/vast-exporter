@@ -118,7 +118,8 @@ class MetricDescriptor(object):
             for i in self.properties:
                 self.property_to_fqn[i] = [f'{class_name},{i}']
         self.fqns = [i for l in self.property_to_fqn.values() for i in l]
-        
+
+
 # read_latency is internal because of a bug (to be fixed soon), meantime and until clusters catch up
 # we must fetch it separately from the rest as we can't combine external+internal in a single query.
 # we split metrics to small groups until 4.3, uwsgi accepts no more than 4k
@@ -135,7 +136,9 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                MetricDescriptor(class_name='ProtoMetrics',
                                 properties=['rd_md_iops',
                                             'wr_md_iops',
-                                            'md_iops'],
+                                            'md_iops',
+                                            'rd_bw',
+                                            'wr_bw'],
                                 tags=PROTO_METRICS_TAGS),
                MetricDescriptor(class_name='ProtoConnectionMetrics',
                                 properties=['s3_conn_pool',
