@@ -499,12 +499,16 @@ class VASTCollector(object):
             node_inactive = self._create_labeled_gauge(node_type + '_inactive', node_type.capitalize() + ' Inctive', labels=node_labels)
             node_failed = self._create_labeled_gauge(node_type + '_failed', node_type.capitalize() + ' Failed', labels=node_labels)
             for node in nodes:
-                self._node_ip_to_node_id_and_type[node['ip']] = (node['id'], node_type)
-                self._node_id_to_hostname[node_type][node['id']] = node['hostname']
-                is_mgmt = node['is_mgmt'] if node_type == 'cnode' else False
-                node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (is_mgmt and node['state'] == 'INACTIVE'))
-                node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not is_mgmt)
-                node_failed.add_metric(extract_keys(node, node_labels), node['state'] in ('FAILED', 'FAILED'))
+                try:
+                    self._node_ip_to_node_id_and_type[node['ip']] = (node['id'], node_type)
+                    self._node_id_to_hostname[node_type][node['id']] = node['hostname']
+                    is_mgmt = node['is_mgmt'] if node_type == 'cnode' else False
+                    node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (is_mgmt and node['state'] == 'INACTIVE'))
+                    node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not is_mgmt)
+                    node_failed.add_metric(extract_keys(node, node_labels), node['state'] in ('FAILED', 'FAILED'))
+                except Exception as e:
+                    logger.debug("Collect nodes failed to collect %s due to an error: %s", node, e)
+                    continue
             yield node_active
             yield node_inactive
             yield node_failed
