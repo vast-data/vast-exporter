@@ -567,7 +567,7 @@ class VASTCollector(object):
     FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
 
     def _get_iodata(self):
-        res = self._client.get('iodata', {'time_frame': '5m'})
+        res = self._client.get('iodata', {'time_frame': '2m'})
         return [i for i in res['data'] if i['timestamp'] == res['timestamp']] # filter latest records
     
     def _get_view_metrics(self):
