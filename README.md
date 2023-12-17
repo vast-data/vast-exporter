@@ -5,6 +5,9 @@ VAST Prometheus Exporter
 The Prometheus exporter connects to VMS and leverages its REST API to extract state and metric information.
 It listens to port 8000 by default. This can be changed using the --port parameter.
 
+> **_NOTE:_**  The VMS hosts an internal Prometheus Exporter as of version 4.5 documented [here](https://support.vastdata.com/hc/en-us/articles/9859963180956-Exporting-Metrics-to-Prometheus).
+The external Prometheus Exporter is not supported as of version 4.7.
+
 Content
 -------
 
