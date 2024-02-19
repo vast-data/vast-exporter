@@ -93,15 +93,18 @@ def extract_keys(obj, keys):
     return [str(obj[k]) for k in keys]
 
 class MetricDescriptor(object):
-    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='2m', scopes=['cnode', 'cluster']):
+    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='2m',
+                 scopes=['cnode', 'cluster'], custom_suffix=('num_samples', 'sum')):
+        if custom_suffix is None:
+            custom_suffix = []
         self.class_name = class_name
         self.time_frame = time_frame
         self.scopes = scopes
         self.properties = properties or []
         self.histograms = histograms or []
         for i in self.histograms:
-            self.properties.append(i + '__num_samples')
-            self.properties.append(i + '__sum')
+            for suffix in custom_suffix:
+                self.properties.append(f'{i}__{suffix}')
         self.tags = tags or []
         assert len(self.tags) <= 1, "Collection of multi-tag metrics isn't supported yet"
         self.property_to_fqn = {}
@@ -150,6 +153,17 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             's3_conn_rejected',
                                             'nfs_conn_rejected',
                                             'smb_conn_rejected']),
+               MetricDescriptor(class_name='SchedulerMetrics',
+                                scopes=['cnode'],
+                                time_frame='10m',
+                                histograms=['window_runtime'],
+                                custom_suffix=('avg',)),
+               MetricDescriptor(class_name='SchedulerMetrics',
+                                scopes=['cnode'],
+                                time_frame='10m',
+                                histograms=['queue_latency_ns_fiber'],
+                                tags={'histogram': ['1']},
+                                custom_suffix=('avg',)),
                MetricDescriptor(class_name='S3Metrics',
                                 time_frame='8m',
                                 properties=['get_object',
@@ -387,7 +401,7 @@ class VASTCollector(object):
         seen = set()
         unique_rows = []
         for row in reversed(rows):
-            if row[index_of_id] not in seen:
+            if row[index_of_id] not in seen and row[-1] is not None:
                 seen.add(row[index_of_id])
                 unique_rows.append(row)
         columns = zip(*unique_rows)
