@@ -366,6 +366,7 @@ class VASTCollector(object):
         self._should_collect_user_quotas = collect_user_quotas
         self._cluster_name = None
         self._node_id_to_hostname = {'cnode':{}, 'dnode': {}}
+        self._box_id_to_name = {'cbox': {}, 'dbox': {}}
         self._node_ip_to_node_id_and_type = {} # 172.16.3.1 -> (1, 'cnode')
         self._nic_id_to_ip = {}
         self._nic_id_to_display_name = {}
@@ -428,6 +429,8 @@ class VASTCollector(object):
         for scope in descriptor.scopes:
             if scope == 'cnode':
                 labels = ['cnode_id', 'hostname']
+            elif scope in ['cbox', 'dbox']:
+                labels = ['id', 'name']
             elif scope == 'nic':
                 labels = ['hostname', 'display_name']
             elif scope in {'ssd', 'nvram'}:
@@ -450,6 +453,8 @@ class VASTCollector(object):
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
                         if scope == 'cnode':
                             label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope in {'cbox', 'dbox'}:
+                            label_values = [str(object_id), self._box_id_to_name[scope].get(object_id, None)]
                         elif scope == 'nic':
                             node_ip = self._nic_id_to_ip.get(object_id, DELETED_OBJECT_LABEL)
                             if node_ip not in self._node_ip_to_node_id_and_type:
@@ -491,6 +496,7 @@ class VASTCollector(object):
 
     def _collect_nodes(self):
         node_labels = ['name', 'guid', 'hostname', 'id']
+        node_to_box_names = {'cnode': 'cbox', 'dnode': 'dbox'}
         for node_type in ['cnode', 'dnode']:
             nodes = self._client.get(node_type + 's')
             node_active = self._create_labeled_gauge(node_type + '_active', node_type.capitalize() + ' Active', labels=node_labels)
@@ -503,6 +509,8 @@ class VASTCollector(object):
                 node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (is_mgmt and node['state'] == 'INACTIVE'))
                 node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not is_mgmt)
                 node_failed.add_metric(extract_keys(node, node_labels), node['state'] in ('FAILED', 'FAILED'))
+                box_type = node_to_box_names[node_type]
+                self._box_id_to_name[box_type][node[f'{box_type}_id']] = node[box_type]
             yield node_active
             yield node_inactive
             yield node_failed
