@@ -124,8 +124,7 @@ class ProxyCollector():
         return f'uid="{name}"'
 
     def get_metrics(self):
-        response = self._request('GET', '/prometheusmetrics/')
-        #response = self._request('GET', '/prometheusmetrics/all')
+        response = self._request('GET', '/prometheusmetrics/all')
         output = []
         for line in response.data.decode('utf-8').split('\n'):
             if line.startswith('vast_user_'):
