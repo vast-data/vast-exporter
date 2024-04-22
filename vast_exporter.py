@@ -676,7 +676,7 @@ class VASTCollector(object):
                 uid = -1
             if self._resolve_uid and uid != -1:
                 try:
-                    name = pwd.getpwuid(int(uid)).pw_name
+                    name = pwd.getpwuid(uid).pw_name
                 except (KeyError, ValueError):
                     pass
             metrics = user_metrics.setdefault((name, uid), {})
@@ -688,12 +688,12 @@ class VASTCollector(object):
         for metric in self.FLOW_METRICS:
             gauge = self._create_labeled_gauge('user_' + metric, 'User ' + metric, labels=user_labels)
             for (name, uid), metrics in user_metrics.items():
-                gauge.add_metric((name or 'none', uid), metrics[metric])
+                gauge.add_metric((name or 'none', str(uid)), metrics[metric])
             yield gauge
 
         gauge = self._create_labeled_gauge('user_connections', 'User Connections', labels=user_labels)
         for (name, uid), count in user_connections.items():
-            gauge.add_metric((name or 'none', uid), count)
+            gauge.add_metric((name or 'none', str(uid)), count)
         yield gauge
 
     def _collect_logical(self):
