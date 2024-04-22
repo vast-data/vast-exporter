@@ -567,18 +567,15 @@ class VASTCollector(object):
     FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
 
     def _get_iodata(self):
-        res = self._client.get('iodata', {'time_frame': '2m'})
-        return [i for i in res['data'] if i['timestamp'] == res['timestamp']] # filter latest records
+        return self._client.get('iodata', {'time_frame': '2m', 'graph': True})
     
     def _get_view_metrics(self):
-        rows = self._get_iodata()
         view_to_metrics = {}
-        for row in rows:
-            name = re.sub('(.+?) ?\(.+?\)', "\g<1>", row['view']) # default format is 'name (alias)'
-            metrics = view_to_metrics.setdefault(name, {})
+        for _, view_data in self._get_iodata()['nodes_data']['view'].items():
+            view_metrics = {}
             for metric in self.FLOW_METRICS:
-                metrics[metric] = metrics.get(metric, 0) + row[metric]
-
+                view_metrics[metric] = view_data[metric]
+            view_to_metrics[view_data['entity_details']['path']] = view_metrics
         return view_to_metrics
 
     def _collect_views(self):
@@ -669,25 +666,23 @@ class VASTCollector(object):
         yield from group_gauges.values()
 
     def _collect_top_users(self):
-        rows = self._get_iodata()
+        data = self._get_iodata()
         user_metrics = {}
         user_connections = defaultdict(int)
-        for row in rows:
-            if row['user'].startswith('('):
-                name, uid = row['user'].split(') ')
-                name = name.strip('(')
-            else:
-                uid = row['user']
-                name = MISSING_USER_NAME_LABEL
-                if self._resolve_uid:
-                    try:
-                        name = pwd.getpwuid(int(uid)).pw_name
-                    except (KeyError, ValueError):
-                        pass
+        for user_repr, user_data in data['nodes_data']['user'].items():
+            name = user_data['entity_details']['username'] or MISSING_USER_NAME_LABEL
+            uid = user_data['entity_details']['uid']
+            if uid is None:
+                uid = -1
+            if self._resolve_uid and uid != -1:
+                try:
+                    name = pwd.getpwuid(int(uid)).pw_name
+                except (KeyError, ValueError):
+                    pass
             metrics = user_metrics.setdefault((name, uid), {})
             for metric in self.FLOW_METRICS:
-                metrics[metric] = metrics.get(metric, 0) + row[metric]
-            user_connections[(name, uid)] += 1
+                metrics[metric] = user_data[metric]
+            user_connections[(name, uid)] = len(data['connections']['user'][user_repr]['host'])
 
         user_labels = ['name', 'id']
         for metric in self.FLOW_METRICS:
