@@ -73,10 +73,14 @@ class VASTClient(object):
         headers = urllib3.make_headers(basic_auth=self._user + ':' + self._password)
         with self.vms_latency.time():
             logger.debug(f'Sending request with url={url} and parameters={params}')
+            start = time.perf_counter()
             r = pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
+            request_time = time.perf_counter() - start
+            if request_time > 15:
+                logger.error(f'Response for request {url} with {params} returned status {r.status}, and took longer than 15s to complete, took {request_time} seconds')
         if r.status != http.HTTPStatus.OK:
-            raise RESTFailure(f'Response for request {url} with {params} failed with error {r.status} and message {r.data}')
-        return json.loads(r.data.decode('utf-8'))
+            logger.error(f'Response for request {url} with {params} failed with error {r.status} and message {r.data}')
+        return json.loads(r.data.decode('utf-8')) if r.data else {}
 
     def get(self, url, params=None):
         return self._request('GET', url, params)
@@ -233,8 +237,7 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                MetricDescriptor(class_name='Hardware',
                                 scopes=['dbox'],
                                 tags={'component': ['box']},
-                                properties=['ambient_temp',
-                                            'failed_ssd_slots']),
+                                properties=['ambient_temp']),
                MetricDescriptor(class_name='Hardware',
                                 scopes=['cbox'],
                                 tags={'component': ['box']},
@@ -275,7 +278,6 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 scopes=['psu'],
                                 tags={'component': ['psu']},
                                 properties=['v_in',
-                                            'temperature',
                                             'input_power',
                                             'total_power']),
                # defrag metrics
@@ -381,6 +383,8 @@ class VASTCollector(object):
         self._node_ip_to_node_id_and_type = {} # 172.16.3.1 -> (1, 'cnode')
         self._nic_id_to_ip = {}
         self._nic_id_to_display_name = {}
+        self._fan_id_to_info = {}
+        self._psu_id_to_info = {}
         self._drive_id_to_info = {'ssd': {}, 'nvram': {}}
         self._box_id_to_name = {'cbox': {}, 'dbox': {}}
         self._view_id_to_view = None
@@ -424,11 +428,11 @@ class VASTCollector(object):
         properties = [('prop_list', metric) for metric in metric_names]
         result = self._client.get('monitors/ad_hoc_query', [('object_type', scope),
                                                             ('time_frame', time_frame)] + properties)
-        rows = result['data']
         # take the latest row per per object id
         try:
+            rows = result['data']
             index_of_id = result['prop_list'].index('object_id')
-        except ValueError:
+        except (KeyError, ValueError):
             return {}
         seen = set()
         unique_rows = []
@@ -443,12 +447,16 @@ class VASTCollector(object):
         for scope in descriptor.scopes:
             if scope == 'cnode':
                 labels = ['cnode_id', 'hostname']
+            elif scope == 'dnode':
+                labels = ['dnode_id', 'hostname']
             elif scope in {'cbox', 'dbox'}:
                 labels = ['id', 'name']
             elif scope == 'nic':
                 labels = ['hostname', 'display_name']
             elif scope in {'ssd', 'nvram'}:
                 labels = ['guid', 'sn', 'title']
+            elif scope in {'psu', 'fan'}:
+                labels = ['box', 'title']
             elif scope == "view":
                 labels = ['path', 'name', 'guid']
             else:
@@ -469,6 +477,8 @@ class VASTCollector(object):
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
                         if scope == 'cnode':
                             label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope == 'dnode':
+                            label_values = [str(object_id), self._node_id_to_hostname['dnode'].get(object_id, DELETED_OBJECT_LABEL)]
                         elif scope in {'cbox', 'dbox'}:
                             label_values = [str(object_id), self._box_id_to_name[scope].get(object_id, None)]
                         elif scope == 'nic':
@@ -478,6 +488,18 @@ class VASTCollector(object):
                             node_id, node_type = self._node_ip_to_node_id_and_type.get(node_ip)
                             label_values = [self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL),
                                             self._nic_id_to_display_name.get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope == 'fan':
+                            try:
+                                info = self._fan_id_to_info[object_id]
+                            except KeyError:
+                                continue
+                            label_values = [info['box'], info['title']]
+                        elif scope == 'psu':
+                            try:
+                                info = self._psu_id_to_info[object_id]
+                            except KeyError:
+                                continue
+                            label_values = [info['box'], info['title']]
                         elif scope in {'ssd', 'nvram'}:
                             try:
                                 info = self._drive_id_to_info[scope][object_id]
@@ -516,6 +538,7 @@ class VASTCollector(object):
 
     def _collect_nodes(self):
         node_labels = ['name', 'guid', 'hostname', 'id']
+        version_labels = node_labels + [ 'os_version', 'bios_version', 'bmc_fw_version' ]
         node_to_box_names = {'cnode': 'cbox', 'dnode': 'dbox'}
         for node_type in ['cnode', 'dnode']:
             nodes = self._client.get(node_type + 's')
@@ -525,6 +548,7 @@ class VASTCollector(object):
             node_active = self._create_labeled_gauge(node_type + '_active', node_type.capitalize() + ' Active', labels=node_labels)
             node_inactive = self._create_labeled_gauge(node_type + '_inactive', node_type.capitalize() + ' Inctive', labels=node_labels)
             node_failed = self._create_labeled_gauge(node_type + '_failed', node_type.capitalize() + ' Failed', labels=node_labels)
+            node_version = self._create_labeled_gauge(node_type + '_version', node_type.capitalize() + ' OS and Firmware Versions', labels=version_labels)
             for node in nodes:
                 try:
                     self._node_ip_to_node_id_and_type[node['ip']] = (node['id'], node_type)
@@ -533,12 +557,14 @@ class VASTCollector(object):
                     node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (is_mgmt and node['state'] == 'INACTIVE'))
                     node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not is_mgmt)
                     node_failed.add_metric(extract_keys(node, node_labels), node['state'] in ('FAILED', 'FAILED'))
+                    node_version.add_metric(extract_keys(node, version_labels), True)
                 except Exception as e:
                     logger.debug("Collect nodes failed to collect %s due to an error: %s", node, e)
                     continue
             yield node_active
             yield node_inactive
             yield node_failed
+            yield node_version
 
     def _collect_physical(self):
         drive_labels = ['guid', 'title', 'sn']
@@ -566,30 +592,35 @@ class VASTCollector(object):
         yield nic_active
         
         fans = self._client.get('fans')
-        fan_labels = ['box', 'location']
+        fan_labels = ['box', 'location', 'title']
         fan_active = self._create_labeled_gauge('fan_active', 'Fan Active', labels=fan_labels)
         for fan in fans:
             fan_active.add_metric(extract_keys(fan, fan_labels), fan['state'] == 'OK')
+            self._fan_id_to_info[fan['id']] = fan
         yield fan_active
 
         psus = self._client.get('psus')
-        psu_labels = ['box', 'location']
+        psu_labels = ['box', 'location', 'title']
         psu_active = self._create_labeled_gauge('psu_active', 'PSU Active', labels=psu_labels)
         for psu in psus:
             psu_active.add_metric(extract_keys(psu, psu_labels), psu['state'] == 'up')
+            self._psu_id_to_info[psu['id']] = psu
         yield psu_active
 
-        switch_labels = ['guid', 'ip', 'display_name', 'id']
+        switch_labels = ['guid', 'ip', 'display_name', 'id', 'fw_version']
         switch_active = self._create_labeled_gauge('switch_active', 'Switch Active', labels=switch_labels)
         for switch in self._client.get('switches'):
             switch_active.add_metric(extract_keys(switch, switch_labels), switch['state'] == 'OK')
         yield switch_active
 
-        if self._cluster_version >= (4, 3):
+        if self._cluster_version >= (4, 3) and self._cluster_version < (4, 7):
             subnetmanagers = self._client.get('subnetmanager')    
             if subnetmanagers:
                 subnetmanager, = subnetmanagers
                 yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', subnetmanager['state'] == 'ACTIVE')
+        elif self._cluster_version >= (4, 7):
+            cnodes = self._client.get('cnodes')
+            yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', any(cnode for cnode in cnodes if cnode['host_opensm_master'] is True))
 
     FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops', 'bw']
 
@@ -619,11 +650,12 @@ class VASTCollector(object):
                     if len(label_values) > 3:
                         username = ' '.join(str(name_part) for name_part in label_values[:-2])
                         label_values = list((username, label_values[-2], label_values[-1]))
-                    try:
-                        name = pwd.getpwuid(int(label_values[1])).pw_name
-                        label_values[0] = name
-                    except (KeyError, ValueError):
-                        pass
+                    if self._resolve_uid:
+                        try:
+                            name = pwd.getpwuid(int(label_values[1])).pw_name
+                            label_values[0] = name
+                        except (KeyError, ValueError):
+                            pass
                     try:
                         total_gauge.add_metric(label_values, user_data['total'])
                         backward_gauge.add_metric(label_values, user_data['total'])
