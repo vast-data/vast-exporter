@@ -278,6 +278,7 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 scopes=['psu'],
                                 tags={'component': ['psu']},
                                 properties=['v_in',
+                                            'temperature',
                                             'input_power',
                                             'total_power']),
                # defrag metrics
@@ -646,10 +647,10 @@ class VASTCollector(object):
                 title = user_data.get('title')
                 if title:
                     # title is a composed string of name, uid and more_info field, sometimes name can contain whitespaces
-                    label_values = re.sub(r'[()]', '', title).split()
-                    if len(label_values) > 3:
-                        username = ' '.join(str(name_part) for name_part in label_values[:-2])
-                        label_values = list((username, label_values[-2], label_values[-1]))
+                    # (name) 1234 [default]
+                    # (name)  [default]
+                    # (name)  1234
+                    label_values = list(re.findall(r'(?:\((.+?)\))?\s?(\d+)?\s+\[(.+?)\]', title)[0])
                     if self._resolve_uid:
                         try:
                             name = pwd.getpwuid(int(label_values[1])).pw_name
