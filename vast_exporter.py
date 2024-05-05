@@ -544,8 +544,6 @@ class VASTCollector(object):
         for node_type in ['cnode', 'dnode']:
             nodes = self._client.get(node_type + 's')
             box_type = node_to_box_names[node_type]
-            box_id = nodes[0][f'{box_type}_id']
-            self._box_id_to_name[box_type][box_id] = nodes[0][box_type]
             node_active = self._create_labeled_gauge(node_type + '_active', node_type.capitalize() + ' Active', labels=node_labels)
             node_inactive = self._create_labeled_gauge(node_type + '_inactive', node_type.capitalize() + ' Inctive', labels=node_labels)
             node_failed = self._create_labeled_gauge(node_type + '_failed', node_type.capitalize() + ' Failed', labels=node_labels)
@@ -559,6 +557,8 @@ class VASTCollector(object):
                     node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not is_mgmt)
                     node_failed.add_metric(extract_keys(node, node_labels), node['state'] in ('FAILED', 'FAILED'))
                     node_version.add_metric(extract_keys(node, version_labels), True)
+                    box_id = node[f'{box_type}_id']
+                    self._box_id_to_name[box_type][box_id] = node[box_type]
                 except Exception as e:
                     logger.debug("Collect nodes failed to collect %s due to an error: %s", node, e)
                     continue
