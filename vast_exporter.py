@@ -437,7 +437,7 @@ class VASTCollector(object):
             return {}
         seen = set()
         unique_rows = []
-        for row in reversed(rows):
+        for row in rows:
             if row[index_of_id] not in seen:
                 seen.add(row[index_of_id])
                 unique_rows.append(row)
