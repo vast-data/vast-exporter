@@ -73,10 +73,14 @@ class VASTClient(object):
         headers = urllib3.make_headers(basic_auth=self._user + ':' + self._password)
         with self.vms_latency.time():
             logger.debug(f'Sending request with url={url} and parameters={params}')
+            start = time.perf_counter()
             r = pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
+            request_time = time.perf_counter() - start
+            if request_time > 15:
+                logger.error(f'Response for request {url} with {params} returned status {r.status}, and took longer than 15s to complete, took {request_time} seconds')
         if r.status != http.HTTPStatus.OK:
-            raise RESTFailure(f'Response for request {url} with {params} failed with error {r.status} and message {r.data}')
-        return json.loads(r.data.decode('utf-8'))
+            logger.error(f'Response for request {url} with {params} failed with error {r.status} and message {r.data}')
+        return json.loads(r.data.decode('utf-8')) if r.data else {}
 
     def get(self, url, params=None):
         return self._request('GET', url, params)
@@ -93,15 +97,17 @@ def extract_keys(obj, keys):
     return [str(obj[k]) for k in keys]
 
 class MetricDescriptor(object):
-    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='2m', scopes=['cnode', 'cluster']):
+    def __init__(self, class_name, properties=None, histograms=None, tags=None, time_frame='2m', scopes=['cnode', 'cluster'], custom_suffix=('num_samples', 'sum')):
+        if custom_suffix is None:
+            custom_suffix = []
         self.class_name = class_name
         self.time_frame = time_frame
         self.scopes = scopes
         self.properties = properties or []
         self.histograms = histograms or []
         for i in self.histograms:
-            self.properties.append(i + '__num_samples')
-            self.properties.append(i + '__sum')
+            for suffix in custom_suffix:
+                self.properties.append(f'{i}__{suffix}')
         self.tags = tags or []
         assert len(self.tags) <= 1, "Collection of multi-tag metrics isn't supported yet"
         self.property_to_fqn = {}
@@ -231,8 +237,7 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                MetricDescriptor(class_name='Hardware',
                                 scopes=['dbox'],
                                 tags={'component': ['box']},
-                                properties=['ambient_temp',
-                                            'failed_ssd_slots']),
+                                properties=['ambient_temp']),
                MetricDescriptor(class_name='Hardware',
                                 scopes=['cbox'],
                                 tags={'component': ['box']},
@@ -321,6 +326,16 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                 tags={'ingest_client_type': ['IngestClientType.INGEST']},
                                 histograms=['stress_sleep_length'])]
 
+VIEWS_DESCRIPTORS = [MetricDescriptor(class_name='ViewMetrics',
+                                      scopes=['view'],
+                                      time_frame='13m',
+                                      histograms=['write_iops', 'read_iops',
+                                                  'write_bw', 'read_bw',
+                                                  'write_md_iops', 'read_md_iops',
+                                                  'read_md_latency', 'write_md_latency',
+                                                  'qos_wait_for_budget_time', 'write_latency',
+                                                  'read_latency'])]
+
 class MetricFamily(Metric): # mostly copied from the client library
     TYPE = None
     def __init__(self,
@@ -369,7 +384,11 @@ class VASTCollector(object):
         self._node_ip_to_node_id_and_type = {} # 172.16.3.1 -> (1, 'cnode')
         self._nic_id_to_ip = {}
         self._nic_id_to_display_name = {}
+        self._fan_id_to_info = {}
+        self._psu_id_to_info = {}
         self._drive_id_to_info = {'ssd': {}, 'nvram': {}}
+        self._box_id_to_name = {'cbox': {}, 'dbox': {}}
+        self._view_id_to_view = None
 
     collection_timer = Summary('vast_collector_latency', 'Total collection time')
     error_counter = Counter('vast_collector_errors', 'Errors raised during collection')
@@ -380,6 +399,7 @@ class VASTCollector(object):
             phase_2_collectors = [self._collect_nodes()] # must be second, for collecting cnode host names and IPs (required by metrics)
             phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views(), self._collect_quotas()]
             phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
+            phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in VIEWS_DESCRIPTORS)
 
             if self._should_collect_top_users:
                 phase_3_collectors.append(self._collect_top_users())
@@ -409,11 +429,11 @@ class VASTCollector(object):
         properties = [('prop_list', metric) for metric in metric_names]
         result = self._client.get('monitors/ad_hoc_query', [('object_type', scope),
                                                             ('time_frame', time_frame)] + properties)
-        rows = result['data']
         # take the latest row per per object id
         try:
+            rows = result['data']
             index_of_id = result['prop_list'].index('object_id')
-        except ValueError:
+        except (KeyError, ValueError):
             return {}
         seen = set()
         unique_rows = []
@@ -428,10 +448,18 @@ class VASTCollector(object):
         for scope in descriptor.scopes:
             if scope == 'cnode':
                 labels = ['cnode_id', 'hostname']
+            elif scope == 'dnode':
+                labels = ['dnode_id', 'hostname']
+            elif scope in {'cbox', 'dbox'}:
+                labels = ['id', 'name']
             elif scope == 'nic':
                 labels = ['hostname', 'display_name']
             elif scope in {'ssd', 'nvram'}:
                 labels = ['guid', 'sn', 'title']
+            elif scope in {'psu', 'fan'}:
+                labels = ['box', 'title']
+            elif scope == "view":
+                labels = ['path', 'name', 'guid']
             else:
                 labels = []
             table = self._get_metrics(scope, descriptor.fqns, descriptor.time_frame)
@@ -450,6 +478,10 @@ class VASTCollector(object):
                     for (object_id, value) in zip(table['object_id'], table[fqn]):
                         if scope == 'cnode':
                             label_values = [str(object_id), self._node_id_to_hostname['cnode'].get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope == 'dnode':
+                            label_values = [str(object_id), self._node_id_to_hostname['dnode'].get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope in {'cbox', 'dbox'}:
+                            label_values = [str(object_id), self._box_id_to_name[scope].get(object_id, None)]
                         elif scope == 'nic':
                             node_ip = self._nic_id_to_ip.get(object_id, DELETED_OBJECT_LABEL)
                             if node_ip not in self._node_ip_to_node_id_and_type:
@@ -457,12 +489,26 @@ class VASTCollector(object):
                             node_id, node_type = self._node_ip_to_node_id_and_type.get(node_ip)
                             label_values = [self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL),
                                             self._nic_id_to_display_name.get(object_id, DELETED_OBJECT_LABEL)]
+                        elif scope == 'fan':
+                            try:
+                                info = self._fan_id_to_info[object_id]
+                            except KeyError:
+                                continue
+                            label_values = [info['box'], info['title']]
+                        elif scope == 'psu':
+                            try:
+                                info = self._psu_id_to_info[object_id]
+                            except KeyError:
+                                continue
+                            label_values = [info['box'], info['title']]
                         elif scope in {'ssd', 'nvram'}:
                             try:
                                 info = self._drive_id_to_info[scope][object_id]
                             except KeyError:
                                 continue
                             label_values = [info['guid'], info['sn'], info['title']]
+                        elif scope == 'view':
+                            label_values = self._view_id_to_view[object_id]
                         else:
                             label_values = []
                         try:
@@ -493,11 +539,15 @@ class VASTCollector(object):
 
     def _collect_nodes(self):
         node_labels = ['name', 'guid', 'hostname', 'id']
+        version_labels = node_labels + [ 'os_version', 'bios_version', 'bmc_fw_version' ]
+        node_to_box_names = {'cnode': 'cbox', 'dnode': 'dbox'}
         for node_type in ['cnode', 'dnode']:
             nodes = self._client.get(node_type + 's')
+            box_type = node_to_box_names[node_type]
             node_active = self._create_labeled_gauge(node_type + '_active', node_type.capitalize() + ' Active', labels=node_labels)
             node_inactive = self._create_labeled_gauge(node_type + '_inactive', node_type.capitalize() + ' Inctive', labels=node_labels)
             node_failed = self._create_labeled_gauge(node_type + '_failed', node_type.capitalize() + ' Failed', labels=node_labels)
+            node_version = self._create_labeled_gauge(node_type + '_version', node_type.capitalize() + ' OS and Firmware Versions', labels=version_labels)
             for node in nodes:
                 try:
                     self._node_ip_to_node_id_and_type[node['ip']] = (node['id'], node_type)
@@ -506,12 +556,16 @@ class VASTCollector(object):
                     node_active.add_metric(extract_keys(node, node_labels), node['state'] in ('ACTIVE', 'ACTIVATING') or (is_mgmt and node['state'] == 'INACTIVE'))
                     node_inactive.add_metric(extract_keys(node, node_labels), node['state'] in ('INACTIVE', 'DEACTIVATING') and not is_mgmt)
                     node_failed.add_metric(extract_keys(node, node_labels), node['state'] in ('FAILED', 'FAILED'))
+                    node_version.add_metric(extract_keys(node, version_labels), True)
+                    box_id = node[f'{box_type}_id']
+                    self._box_id_to_name[box_type][box_id] = node[box_type]
                 except Exception as e:
                     logger.debug("Collect nodes failed to collect %s due to an error: %s", node, e)
                     continue
             yield node_active
             yield node_inactive
             yield node_failed
+            yield node_version
 
     def _collect_physical(self):
         drive_labels = ['guid', 'title', 'sn']
@@ -539,44 +593,84 @@ class VASTCollector(object):
         yield nic_active
         
         fans = self._client.get('fans')
-        fan_labels = ['box', 'location']
+        fan_labels = ['box', 'location', 'title']
         fan_active = self._create_labeled_gauge('fan_active', 'Fan Active', labels=fan_labels)
         for fan in fans:
             fan_active.add_metric(extract_keys(fan, fan_labels), fan['state'] == 'OK')
+            self._fan_id_to_info[fan['id']] = fan
         yield fan_active
 
         psus = self._client.get('psus')
-        psu_labels = ['box', 'location']
+        psu_labels = ['box', 'location', 'title']
         psu_active = self._create_labeled_gauge('psu_active', 'PSU Active', labels=psu_labels)
         for psu in psus:
             psu_active.add_metric(extract_keys(psu, psu_labels), psu['state'] == 'up')
+            self._psu_id_to_info[psu['id']] = psu
         yield psu_active
 
-        switch_labels = ['guid', 'ip', 'display_name', 'id']
+        switch_labels = ['guid', 'ip', 'display_name', 'id', 'fw_version']
         switch_active = self._create_labeled_gauge('switch_active', 'Switch Active', labels=switch_labels)
         for switch in self._client.get('switches'):
             switch_active.add_metric(extract_keys(switch, switch_labels), switch['state'] == 'OK')
         yield switch_active
 
-        if self._cluster_version >= (4, 3):
+        if self._cluster_version >= (4, 3) and self._cluster_version < (4, 7):
             subnetmanagers = self._client.get('subnetmanager')    
             if subnetmanagers:
                 subnetmanager, = subnetmanagers
                 yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', subnetmanager['state'] == 'ACTIVE')
+        elif self._cluster_version >= (4, 7):
+            cnodes = self._client.get('cnodes')
+            yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', any(cnode for cnode in cnodes if cnode['host_opensm_master'] is True))
 
-    FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops']
+    FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops', 'bw']
 
-    def _get_iodata(self):
-        return self._client.get('iodata', {'time_frame': '2m', 'graph': True})
-    
-    def _get_view_metrics(self):
-        view_to_metrics = {}
-        for _, view_data in self._get_iodata()['nodes_data']['view'].items():
-            view_metrics = {}
-            for metric in self.FLOW_METRICS:
-                view_metrics[metric] = view_data[metric]
-            view_to_metrics[view_data['entity_details']['path']] = view_metrics
-        return view_to_metrics
+    def _collect_top_users(self):
+        data = self._client.get('monitors/topn')
+        users_data = data.get("data", {}).get("user", {'key': 'user'})
+
+        user_labels = ['name', 'uid', 'more_info']
+        for flow_metric in self.FLOW_METRICS:
+            total_gauge = self._create_labeled_gauge(f'user_total_{flow_metric}',
+                                                     f'User total {flow_metric} (MB/s)',
+                                                     labels=user_labels)
+            read_gauge = self._create_labeled_gauge(f'user_read_{flow_metric}',
+                                                    f'User read {flow_metric} (MB/s)',
+                                                    labels=user_labels)
+            write_gauge = self._create_labeled_gauge(f'user_write_{flow_metric}',
+                                                     f'User write {flow_metric} (MB/s)',
+                                                     labels=user_labels)
+            # Backward compat with 4.6
+            backward_gauge = self._create_labeled_gauge(f'user_{flow_metric}', f'User {flow_metric} (MB/s)',
+                                                        labels=user_labels)
+            for user_data in users_data.get(flow_metric, []):
+                title = user_data.get('title')
+                if title:
+                    # title is a composed string of name, uid and more_info field, sometimes name can contain whitespaces
+                    # (name) 1234 [default]
+                    # (name)  [default]
+                    # (name)  1234
+                    label_values = list(re.findall(r'(?:\((.+?)\))?\s?(\d+)?\s+\[(.+?)\]', title)[0])
+                    if self._resolve_uid:
+                        try:
+                            name = pwd.getpwuid(int(label_values[1])).pw_name
+                            label_values[0] = name
+                        except (KeyError, ValueError):
+                            pass
+                    try:
+                        total_gauge.add_metric(label_values, user_data['total'])
+                        backward_gauge.add_metric(label_values, user_data['total'])
+                        read_gauge.add_metric(label_values, user_data['read'])
+                        write_gauge.add_metric(label_values, user_data['write'])
+                    except Exception as e:
+                        logger.error(f"Got error when trying to fetch metrics for user {label_values}, {e}")
+                        ERROR_COUNTER.inc()
+                        continue
+
+            yield total_gauge
+            yield read_gauge
+            yield write_gauge
+            yield backward_gauge
 
     def _collect_views(self):
         views = self._client.get('views')
@@ -584,21 +678,15 @@ class VASTCollector(object):
         view_logical_capacity = self._create_labeled_gauge('view_logical_capacity', 'View Logical Capacity', labels=view_labels)
         view_physical_capacity = self._create_labeled_gauge('view_physical_capacity', 'View Physical Capacity', labels=view_labels)
         path_to_view = {}
+        self._view_id_to_view = {}
         for view in views:
+            extracted_keys = extract_keys(view, view_labels)
+            self._view_id_to_view[view['id']] = extracted_keys
             path_to_view[view['path']] = view
             view_logical_capacity.add_metric(extract_keys(view, view_labels), view['logical_capacity'])
             view_physical_capacity.add_metric(extract_keys(view, view_labels), view['physical_capacity']) 
         yield view_logical_capacity
         yield view_physical_capacity
-
-        view_metrics = self._get_view_metrics()
-        for metric in self.FLOW_METRICS:
-            gauge = self._create_labeled_gauge('view_' + metric, 'View ' + metric, labels=view_labels)
-            for path, metrics in view_metrics.items():
-                if not path in path_to_view:
-                    continue
-                gauge.add_metric(extract_keys(path_to_view[path], view_labels), metrics[metric])
-            yield gauge
 
     QUOTA_METRIC_TO_DESCRIPTION = {'used_inodes': 'Quota Used Inodes',
                                    'used_capacity': 'Quota Used Capacity',
@@ -664,37 +752,6 @@ class VASTCollector(object):
         yield group_ok
         yield from user_gauges.values()
         yield from group_gauges.values()
-
-    def _collect_top_users(self):
-        data = self._get_iodata()
-        user_metrics = {}
-        user_connections = defaultdict(int)
-        for user_repr, user_data in data['nodes_data']['user'].items():
-            name = user_data['entity_details']['username'] or MISSING_USER_NAME_LABEL
-            uid = user_data['entity_details']['uid']
-            if uid is None:
-                uid = -1
-            if self._resolve_uid and uid != -1:
-                try:
-                    name = pwd.getpwuid(uid).pw_name
-                except (KeyError, ValueError):
-                    pass
-            metrics = user_metrics.setdefault((name, uid), {})
-            for metric in self.FLOW_METRICS:
-                metrics[metric] = user_data[metric]
-            user_connections[(name, uid)] = len(data['connections']['user'][user_repr]['host'])
-
-        user_labels = ['name', 'id']
-        for metric in self.FLOW_METRICS:
-            gauge = self._create_labeled_gauge('user_' + metric, 'User ' + metric, labels=user_labels)
-            for (name, uid), metrics in user_metrics.items():
-                gauge.add_metric((name or 'none', str(uid)), metrics[metric])
-            yield gauge
-
-        gauge = self._create_labeled_gauge('user_connections', 'User Connections', labels=user_labels)
-        for (name, uid), count in user_connections.items():
-            gauge.add_metric((name or 'none', str(uid)), count)
-        yield gauge
 
     def _collect_logical(self):
         for (provider_url, provider_name, provider_pretty) in [('nis', 'nis', 'NIS'),
