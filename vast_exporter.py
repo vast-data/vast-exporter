@@ -153,6 +153,8 @@ DESCRIPTORS = [MetricDescriptor(class_name='ProtoMetrics',
                                             's3_conn_rejected',
                                             'nfs_conn_rejected',
                                             'smb_conn_rejected']),
+               MetricDescriptor(class_name='RpcRdmaMetrics',
+                                properties=['active_links']),
                MetricDescriptor(class_name='SchedulerMetrics',
                                 time_frame='10m',
                                 histograms=['window_runtime']),
@@ -790,6 +792,18 @@ class VASTCollector(object):
         for replication_target in replication_targets:
             replication_target_ok.add_metric(extract_keys(replication_target, replication_target_labels), replication_target['state'] == 'ACTIVE')
         yield replication_target_ok
+
+        vips = self._client.get('vips')
+        vip_labels = ['cnode', 'hostname', 'vippool']
+        vip_gauge = self._create_labeled_gauge('cnode_vippool', 'CNode-to-VIPPool association', labels=vip_labels)
+        dups = set()
+        for vip in vips:
+            values = tuple(extract_keys(vip, vip_labels))
+            if values in dups:
+                continue
+            dups.add(values)
+            vip_gauge.add_metric(values, 1)
+        yield vip_gauge
 
 def main():
     os.environ['PROMETHEUS_DISABLE_CREATED_SERIES'] = 'True'
