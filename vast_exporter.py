@@ -645,7 +645,7 @@ class VASTCollector(object):
     FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops', 'bw']
 
     def _collect_top_users(self):
-        data = self._client.get('monitors/topn')
+        data = self._client.get('monitors/topn', {'key': 'user'})
         users_data = data.get("data", {}).get("user", {'key': 'user'})
 
         user_labels = ['name', 'uid', 'more_info']
