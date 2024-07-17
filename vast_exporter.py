@@ -416,7 +416,8 @@ class VASTCollector(object):
         with self.collection_timer.time():
             phase_1_collectors = [self._collect_cluster()] # must be first, initializes the cluster name (required by all metrics)
             phase_2_collectors = [self._collect_nodes()] # must be second, for collecting cnode host names and IPs (required by metrics)
-            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views(), self._collect_quotas()]
+            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views(), self._collect_quotas(), 
+                                  self._collect_top_vippools(), self._collect_top_vips()]
             phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
             phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in VIEWS_DESCRIPTORS)
 
@@ -642,11 +643,11 @@ class VASTCollector(object):
             cnodes = self._client.get('cnodes')
             yield self._create_gauge('subnetmanager_active', 'Subnet Manager Active', any(cnode for cnode in cnodes if cnode['host_opensm_master'] is True))
 
-    FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops', 'bw']
+    FLOW_METRICS = ['iops', 'md_iops', 'read_bw', 'read_iops', 'read_md_iops', 'write_bw', 'write_iops', 'write_md_iops', 'bw', 'latency'] # TBD: topn metrics only need bw/iops/latency
 
     def _collect_top_users(self):
         data = self._client.get('monitors/topn', {'key': 'user'})
-        users_data = data.get("data", {}).get("user", {'key': 'user'})
+        users_data = data.get("data", {}).get("user", {})
 
         user_labels = ['name', 'uid', 'more_info']
         for flow_metric in self.FLOW_METRICS:
@@ -690,6 +691,40 @@ class VASTCollector(object):
             yield read_gauge
             yield write_gauge
             yield backward_gauge
+
+    def _collect_topn(self, key):
+        data = self._client.get('monitors/topn', {'key': key})
+        data = data.get('data', {}).get(key, {})
+
+        for flow_metric in self.FLOW_METRICS:
+            key_labels = ['title']
+            total_gauge = self._create_labeled_gauge(f'{key}_total_{flow_metric}',
+                                                     f'{key} total {flow_metric} (MB/s)',
+                                                     labels=key_labels)
+            read_gauge = self._create_labeled_gauge(f'{key}_read_{flow_metric}',
+                                                    f'{key} read {flow_metric} (MB/s)',
+                                                    labels=key_labels)
+            write_gauge = self._create_labeled_gauge(f'{key}_write_{flow_metric}',
+                                                     f'{key} write {flow_metric} (MB/s)',
+                                                     labels=key_labels)
+            for object_data in data.get(flow_metric, []):
+                total_gauge.add_metric([object_data['title']], object_data['total'])
+                read_gauge.add_metric([object_data['title']], object_data['read'])
+                write_gauge.add_metric([object_data['title']], object_data['write'])
+
+            yield total_gauge
+            yield read_gauge
+            yield write_gauge
+
+    def _collect_top_vippools(self):
+        if self._cluster_version < (5, 1):
+            return
+        yield from self._collect_topn('vippool')
+
+    def _collect_top_vips(self):
+        if self._cluster_version < (5, 1):
+            return
+        yield from self._collect_topn('vip')
 
     def _collect_views(self):
         views = self._client.get('views')
