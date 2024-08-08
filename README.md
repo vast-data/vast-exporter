@@ -2,11 +2,10 @@
 VAST Prometheus Exporter
 ========================
 
+> **_NOTE:_**  VAST versions 4.5 and later include the Prometheus Exporter as part of the official API and it should be used instead of this external exporter. See the [Exporting Metrics to Prometheus](https://support.vastdata.com/s/article/UUID-07ca9adf-ea3a-ff7f-ca2d-c71aefc5a4db) documentation for using the exporter included with VMS.
+
 The Prometheus exporter connects to VMS and leverages its REST API to extract state and metric information.
 It listens to port 8000 by default. This can be changed using the --port parameter.
-
-> **_NOTE:_**  The VMS hosts an internal Prometheus Exporter as of version 4.5. Read more about it [here](https://support.vastdata.com/hc/en-us/articles/9859963180956-Exporting-Metrics-to-Prometheus).
-This external Prometheus Exporter will not work properly against VAST version 4.7 and up and will result in loss of metrics.
 
 Content
 -------
@@ -19,7 +18,7 @@ Content
 Pre-requisities
 ---------------
 
-Cluster of version 4.2 and up.
+VAST version 4.2 to 4.4. Versions >= 4.5 should use the [exporter included with VMS](https://support.vastdata.com/s/article/UUID-07ca9adf-ea3a-ff7f-ca2d-c71aefc5a4db).
 
 Docker Installation
 -------------------
