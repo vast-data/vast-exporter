@@ -23,6 +23,7 @@ DELETED_OBJECT_LABEL = 'DELETED'
 
 DEFAULT_PORT = 8000
 VMS_CONCURRENT_REQUESTS = 4
+MAX_THREADS = 4
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -51,30 +52,39 @@ def parse_args():
     add_argument('VAST_COLLECTOR_DEBUG', '--debug', action='store_true', help='Drop into a debugger on error')
     add_argument('VAST_COLLECTOR_TEST', '--test', action='store_true',
                  help='Run the collector once and indicate whether it succeeded in the return code')
+    add_argument('VAST_COLLECTOR_BLOCKING', '--block', action='store_true',
+                 help='Set exporter pool manager to block after set vms-concurrent-requests count is reached')
+    add_argument('VMS_CONCURRENT_REQUESTS', '--vms-concurrent-requests', type=int, default=VMS_CONCURRENT_REQUESTS,
+                 help="Set exporter pool manager's number of allowed concurrent requests \
+                       in a given connection at once before requesting a new connection (Default: 4)")
     return parser.parse_args()
 
 class RESTFailure(Exception): pass
 
 class VASTClient(object):
-    def __init__(self, user, password, address, cert_file=None, cert_server_name=None):
+    def __init__(self, user, password, address, block, vms_concurrent_requests,
+                 cert_file=None, cert_server_name=None):
         self._user = user
         self._password = password
         self._address = address
         self._cert_file = cert_file
         self._cert_server_name = cert_server_name
+        if self._cert_file:
+            self.pm = urllib3.PoolManager(
+                ca_certs=self._cert_file, server_hostname=self._cert_server_name,
+                maxsize=vms_concurrent_requests, block=block)
+        else:
+            self.pm = urllib3.PoolManager(cert_reqs='CERT_NONE',
+                maxsize=vms_concurrent_requests, block=block)
 
     vms_latency = Summary('vast_collector_vms_latency', 'VAST VMS Request Time')
 
     def _request(self, method, url, params):
-        if self._cert_file:
-            pm = urllib3.PoolManager(ca_certs=self._cert_file, server_hostname=self._cert_server_name)
-        else:
-            pm = urllib3.PoolManager(cert_reqs='CERT_NONE')
         headers = urllib3.make_headers(basic_auth=self._user + ':' + self._password)
         with self.vms_latency.time():
             logger.debug(f'Sending request with url={url} and parameters={params}')
             start = time.perf_counter()
-            r = pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
+            r = self.pm.request(method, 'https://{}/api/{}/'.format(self._address, url), headers=headers, fields=params)
             request_time = time.perf_counter() - start
             if request_time > 15:
                 logger.error(f'Response for request {url} with {params} returned status {r.status}, and took longer than 15s to complete, took {request_time} seconds')
@@ -430,7 +440,7 @@ class VASTCollector(object):
             if self._should_collect_top_users:
                 phase_3_collectors.append(self._collect_top_users())
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=VMS_CONCURRENT_REQUESTS) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
                 for collectors in [phase_1_collectors, phase_2_collectors, phase_3_collectors]:
                     futures = [executor.submit(list, g) for g in collectors]
                     for future in concurrent.futures.as_completed(futures):
