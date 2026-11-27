@@ -422,16 +422,19 @@ class VASTCollector(object):
         with self.collection_timer.time():
             phase_1_collectors = [self._collect_cluster()] # must be first, initializes the cluster name (required by all metrics)
             phase_2_collectors = [self._collect_nodes()] # must be second, for collecting cnode host names and IPs (required by metrics)
-            phase_3_collectors = [self._collect_physical(), self._collect_logical(), self._collect_views(), self._collect_quotas(), 
+            # must run before the perf metrics: they fill the drive/fan/psu/nic and view lookup tables
+            # that _collect_perf_metrics uses for labels
+            phase_3_collectors = [self._collect_physical(), self._collect_views()]
+            phase_4_collectors = [self._collect_logical(), self._collect_quotas(),
                                   self._collect_top_vippools(), self._collect_top_vips()]
-            phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
-            phase_3_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in VIEWS_DESCRIPTORS)
+            phase_4_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in DESCRIPTORS)
+            phase_4_collectors.extend(self._collect_perf_metrics(descriptor) for descriptor in VIEWS_DESCRIPTORS)
 
             if self._should_collect_top_users:
-                phase_3_collectors.append(self._collect_top_users())
+                phase_4_collectors.append(self._collect_top_users())
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=VMS_CONCURRENT_REQUESTS) as executor:
-                for collectors in [phase_1_collectors, phase_2_collectors, phase_3_collectors]:
+                for collectors in [phase_1_collectors, phase_2_collectors, phase_3_collectors, phase_4_collectors]:
                     futures = [executor.submit(list, g) for g in collectors]
                     for future in concurrent.futures.as_completed(futures):
                         try:
@@ -534,7 +537,10 @@ class VASTCollector(object):
                                 continue
                             label_values = [info['guid'], info['sn'], info['title']]
                         elif scope == 'view':
-                            label_values = self._view_id_to_view[object_id]
+                            view_labels = (self._view_id_to_view or {}).get(object_id)
+                            if view_labels is None: # view created after the views were listed, or listing failed
+                                continue
+                            label_values = list(view_labels)
                         else:
                             label_values = []
                         try:
@@ -612,10 +618,15 @@ class VASTCollector(object):
         nics = self._client.get('nics')
         nic_active = self._create_labeled_gauge('nic_active', 'NIC Active', labels=['hostname', 'display_name'])
         for nic in nics:
-            node_id, node_type = self._node_ip_to_node_id_and_type.get(nic['host'], DELETED_OBJECT_LABEL)
+            node = self._node_ip_to_node_id_and_type.get(nic['host'])
             self._nic_id_to_ip[nic['id']] = nic['host']
             self._nic_id_to_display_name[nic['id']] = nic['display_name']
-            nic_active.add_metric((self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL), nic['display_name']), nic['state'] == 'up')
+            if node is None: # NIC of a node that wasn't listed (removed, or failed to parse in _collect_nodes)
+                hostname = DELETED_OBJECT_LABEL
+            else:
+                node_id, node_type = node
+                hostname = self._node_id_to_hostname[node_type].get(node_id, DELETED_OBJECT_LABEL)
+            nic_active.add_metric((hostname, nic['display_name']), nic['state'] == 'up')
         yield nic_active
         
         fans = self._client.get('fans')
@@ -690,7 +701,7 @@ class VASTCollector(object):
                         write_gauge.add_metric(label_values, user_data['write'])
                     except Exception as e:
                         logger.error(f"Got error when trying to fetch metrics for user {label_values}, {e}")
-                        ERROR_COUNTER.inc()
+                        self.error_counter.inc()
                         continue
 
             yield total_gauge
@@ -738,13 +749,15 @@ class VASTCollector(object):
         view_logical_capacity = self._create_labeled_gauge('view_logical_capacity', 'View Logical Capacity', labels=view_labels)
         view_physical_capacity = self._create_labeled_gauge('view_physical_capacity', 'View Physical Capacity', labels=view_labels)
         path_to_view = {}
-        self._view_id_to_view = {}
+        view_id_to_view = {}
         for view in views:
             extracted_keys = extract_keys(view, view_labels)
-            self._view_id_to_view[view['id']] = extracted_keys
+            view_id_to_view[view['id']] = extracted_keys
             path_to_view[view['path']] = view
             view_logical_capacity.add_metric(extract_keys(view, view_labels), view['logical_capacity'])
             view_physical_capacity.add_metric(extract_keys(view, view_labels), view['physical_capacity']) 
+        # swap in the complete table at once: a concurrent scrape never sees it half-built
+        self._view_id_to_view = view_id_to_view
         yield view_logical_capacity
         yield view_physical_capacity
 
